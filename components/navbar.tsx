@@ -63,8 +63,8 @@ function Navbar() {
     fetchProfileData();
   }, [isMounted, accessToken, user, setProfile]);
 
-  // Don't show navbar on auth pages
-  if (pathname.startsWith("/login") || pathname.startsWith("/signup")) {
+  // Don't show navbar on auth pages or landing page (landing has its own nav)
+  if (pathname.startsWith("/login") || pathname.startsWith("/signup") || pathname === "/") {
     return null;
   }
 
@@ -80,7 +80,12 @@ function Navbar() {
             <div className="size-8 rounded-lg bg-primary flex items-center justify-center">
               <Mail className="size-4 text-primary-foreground" />
             </div>
-            <span className="text-xl font-bold">Email Config</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xl font-bold">Email Config</span>
+              <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-gradient-to-r from-primary/20 to-primary/10 text-primary border border-primary/30 rounded">
+                BETA
+              </span>
+            </div>
           </Link>
 
           {/* Nav Links - show if mounted and authenticated */}

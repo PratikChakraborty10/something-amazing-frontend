@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ChevronRight,
   Mail,
@@ -41,48 +41,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+
+import { useAuthStore } from "@/lib/auth-store";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-
-// Mock campaign data (would come from state/API in real app)
-const campaignData = {
-  name: "December Newsletter",
-  description: "Monthly newsletter for December 2024",
-  subject: "Your December update is here!",
-  preheader: "Check out what's new this month",
-  senderName: "John from Acme",
-  senderEmail: "hello@acme.com",
-  replyTo: "support@acme.com",
-  sendType: "now" as const,
-  scheduledDate: null,
-  scheduledTime: null,
-};
-
-// Mock recipient lists
-const selectedLists = [
-  { id: "list_1", name: "Q4 Product Launch Leads", contactCount: 2756 },
-  { id: "list_2", name: "Newsletter Subscribers", contactCount: 12089 },
-];
-
-// Mock email content
-const emailContent = `
-  <h1>Hello John! 👋</h1>
-  <p>Welcome to our December newsletter. We're excited to share what's new with you this month.</p>
-  <h2>What's New</h2>
-  <p>Here are the highlights from the past month:</p>
-  <ul>
-    <li>New feature launches</li>
-    <li>Product improvements</li>
-    <li>Upcoming events</li>
-  </ul>
-  <p>We hope you enjoy the updates!</p>
-  <p>Best regards,<br/>The Team</p>
-`;
+  getCampaign,
+  sendCampaign,
+  scheduleCampaign,
+  Campaign,
+} from "@/lib/campaigns-api";
 
 function ChecklistItem({
   label,
@@ -112,30 +78,116 @@ function ChecklistItem({
   );
 }
 
-export default function ReviewPage() {
+function ReviewPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const campaignId = searchParams.get("id");
+  const { accessToken } = useAuthStore();
+
+  const [campaign, setCampaign] = useState<Campaign | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [previewMode, setPreviewMode] = useState<"desktop" | "mobile">("desktop");
-  const [showPreview, setShowPreview] = useState(false);
   const [confirmSendOpen, setConfirmSendOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [sendComplete, setSendComplete] = useState(false);
 
-  const totalRecipients = selectedLists.reduce(
-    (sum, list) => sum + list.contactCount,
-    0
-  );
+  // Fetch campaign
+  useEffect(() => {
+    async function fetchCampaign() {
+      if (!accessToken || !campaignId) {
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        setIsLoading(true);
+        const data = await getCampaign(accessToken, campaignId);
+        setCampaign(data);
+      } catch (error) {
+        console.error("Failed to fetch campaign:", error);
+        toast.error("Failed to load campaign");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    fetchCampaign();
+  }, [accessToken, campaignId]);
 
   const handleSend = async () => {
-    setIsSending(true);
+    if (!accessToken || !campaign) return;
 
-    // Mock sending delay
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      setIsSending(true);
 
-    setIsSending(false);
-    setConfirmSendOpen(false);
-    setSendComplete(true);
-    toast.success("Campaign sent successfully!");
+      if (campaign.sendType === "scheduled" && campaign.scheduledAt) {
+        await scheduleCampaign(accessToken, campaign.id, campaign.scheduledAt);
+        toast.success("Campaign scheduled successfully!");
+      } else {
+        await sendCampaign(accessToken, campaign.id);
+        toast.success("Campaign sent successfully!");
+      }
+
+      setConfirmSendOpen(false);
+      setSendComplete(true);
+    } catch (error) {
+      console.error("Failed to send campaign:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to send campaign");
+    } finally {
+      setIsSending(false);
+    }
   };
+
+  if (!campaignId) {
+    return (
+      <div className="min-h-full bg-background">
+        <div className="max-w-4xl mx-auto px-4 py-8">
+          <Card className="rounded-2xl">
+            <CardContent className="py-16 text-center">
+              <Mail className="size-12 mx-auto mb-4 text-muted-foreground" />
+              <h3 className="text-lg font-semibold mb-2">No campaign selected</h3>
+              <p className="text-muted-foreground mb-4">
+                Please select a campaign to review
+              </p>
+              <Button asChild>
+                <Link href="/campaigns">View Campaigns</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="min-h-full bg-background">
+        <div className="max-w-4xl mx-auto px-4 py-8">
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="size-8 animate-spin text-muted-foreground" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!campaign) {
+    return (
+      <div className="min-h-full bg-background">
+        <div className="max-w-4xl mx-auto px-4 py-8">
+          <Card className="rounded-2xl">
+            <CardContent className="py-16 text-center">
+              <AlertCircle className="size-12 mx-auto mb-4 text-destructive" />
+              <h3 className="text-lg font-semibold mb-2">Campaign not found</h3>
+              <Button asChild>
+                <Link href="/campaigns">Back to Campaigns</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
 
   if (sendComplete) {
     return (
@@ -146,18 +198,20 @@ export default function ReviewPage() {
               <CheckCircle2 className="size-8 text-green-600" />
             </div>
             <h1 className="text-2xl font-semibold mb-2">
-              Campaign Sent Successfully!
+              Campaign {campaign.sendType === "scheduled" ? "Scheduled" : "Sent"} Successfully!
             </h1>
             <p className="text-muted-foreground mb-6">
-              Your email is on its way to {totalRecipients.toLocaleString()}{" "}
-              recipients.
+              {campaign.sendType === "scheduled" 
+                ? `Your campaign will be sent to ${campaign.recipients.toLocaleString()} recipients on ${new Date(campaign.scheduledAt || "").toLocaleString()}.`
+                : `Your email is on its way to ${campaign.recipients.toLocaleString()} recipients.`
+              }
             </p>
             <div className="space-y-3">
               <Button className="w-full" asChild>
                 <Link href="/campaigns">View All Campaigns</Link>
               </Button>
               <Button variant="outline" className="w-full" asChild>
-                <Link href="/create-campaign">Create Another Campaign</Link>
+                <Link href="/campaigns/create-campaign">Create Another Campaign</Link>
               </Button>
             </div>
           </CardContent>
@@ -165,6 +219,16 @@ export default function ReviewPage() {
       </div>
     );
   }
+
+  const getPreviewHtml = () => {
+    if (!campaign.htmlContent) return "<p>No content</p>";
+    
+    return campaign.htmlContent
+      .replace(/\{\{firstName\}\}/g, "John")
+      .replace(/\{\{lastName\}\}/g, "Doe")
+      .replace(/\{\{email\}\}/g, "john@example.com")
+      .replace(/\{\{company\}\}/g, "Acme Inc");
+  };
 
   return (
     <div className="min-h-full bg-background">
@@ -179,7 +243,7 @@ export default function ReviewPage() {
           </Link>
           <ChevronRight className="size-4" />
           <Link
-            href="/create-campaign"
+            href="/campaigns/create-campaign"
             className="hover:text-foreground transition-colors"
           >
             Create Campaign
@@ -236,7 +300,7 @@ export default function ReviewPage() {
                     Campaign Details
                   </CardTitle>
                   <Button variant="ghost" size="sm" asChild>
-                    <Link href="/create-campaign">
+                    <Link href={`/campaigns/create-campaign?edit=${campaign.id}`}>
                       <Edit3 className="size-4" />
                       Edit
                     </Link>
@@ -249,28 +313,29 @@ export default function ReviewPage() {
                     <p className="text-sm text-muted-foreground">
                       Campaign Name
                     </p>
-                    <p className="font-medium">{campaignData.name}</p>
+                    <p className="font-medium">{campaign.name}</p>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Subject Line</p>
-                    <p className="font-medium">{campaignData.subject}</p>
+                    <p className="font-medium">{campaign.subject}</p>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Sender</p>
                     <p className="font-medium">
-                      {campaignData.senderName} &lt;{campaignData.senderEmail}
-                      &gt;
+                      {campaign.senderName} &lt;{campaign.senderEmail}&gt;
                     </p>
                   </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Reply-To</p>
-                    <p className="font-medium">{campaignData.replyTo}</p>
-                  </div>
+                  {campaign.replyTo && (
+                    <div>
+                      <p className="text-sm text-muted-foreground">Reply-To</p>
+                      <p className="font-medium">{campaign.replyTo}</p>
+                    </div>
+                  )}
                 </div>
-                {campaignData.preheader && (
+                {campaign.preheader && (
                   <div>
                     <p className="text-sm text-muted-foreground">Preheader</p>
-                    <p className="font-medium">{campaignData.preheader}</p>
+                    <p className="font-medium">{campaign.preheader}</p>
                   </div>
                 )}
               </CardContent>
@@ -285,7 +350,7 @@ export default function ReviewPage() {
                     Recipients
                   </CardTitle>
                   <Button variant="ghost" size="sm" asChild>
-                    <Link href="/create-campaign">
+                    <Link href={`/campaigns/create-campaign?edit=${campaign.id}`}>
                       <Edit3 className="size-4" />
                       Edit
                     </Link>
@@ -293,24 +358,23 @@ export default function ReviewPage() {
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3">
-                  {selectedLists.map((list) => (
-                    <div
-                      key={list.id}
-                      className="flex items-center justify-between py-2 px-3 bg-muted/50 rounded-lg"
-                    >
-                      <span className="font-medium">{list.name}</span>
-                      <Badge variant="secondary">
-                        {list.contactCount.toLocaleString()} contacts
-                      </Badge>
-                    </div>
-                  ))}
-                </div>
+                {campaign.lists && campaign.lists.length > 0 && (
+                  <div className="space-y-3 mb-4">
+                    {campaign.lists.map((list) => (
+                      <div
+                        key={list.id}
+                        className="flex items-center justify-between py-2 px-3 bg-muted/50 rounded-lg"
+                      >
+                        <span className="font-medium">{list.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <Separator className="my-4" />
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Total Recipients</span>
                   <span className="text-xl font-semibold">
-                    {totalRecipients.toLocaleString()}
+                    {campaign.recipients.toLocaleString()}
                   </span>
                 </div>
               </CardContent>
@@ -344,7 +408,7 @@ export default function ReviewPage() {
                       </Button>
                     </div>
                     <Button variant="ghost" size="sm" asChild>
-                      <Link href="/campaigns/email-editor">
+                      <Link href={`/campaigns/email-editor?id=${campaign.id}`}>
                         <Edit3 className="size-4" />
                         Edit
                       </Link>
@@ -362,16 +426,15 @@ export default function ReviewPage() {
                   <div className="border-b px-4 py-3 bg-muted/30">
                     <p className="text-xs text-muted-foreground">From</p>
                     <p className="text-sm font-medium">
-                      {campaignData.senderName} &lt;{campaignData.senderEmail}
-                      &gt;
+                      {campaign.senderName} &lt;{campaign.senderEmail}&gt;
                     </p>
                     <p className="text-xs text-muted-foreground mt-2">Subject</p>
-                    <p className="text-sm font-medium">{campaignData.subject}</p>
+                    <p className="text-sm font-medium">{campaign.subject}</p>
                   </div>
                   {/* Email body */}
                   <div
                     className="p-4 ProseMirror max-w-none"
-                    dangerouslySetInnerHTML={{ __html: emailContent }}
+                    dangerouslySetInnerHTML={{ __html: getPreviewHtml() }}
                   />
                 </div>
               </CardContent>
@@ -389,7 +452,7 @@ export default function ReviewPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {campaignData.sendType === "now" ? (
+                {campaign.sendType === "now" ? (
                   <div className="flex items-center gap-3 p-3 bg-green-50 rounded-lg border border-green-200">
                     <Send className="size-5 text-green-600" />
                     <div>
@@ -405,8 +468,7 @@ export default function ReviewPage() {
                     <div>
                       <p className="font-medium text-blue-800">Scheduled</p>
                       <p className="text-sm text-blue-600">
-                        {campaignData.scheduledDate} at{" "}
-                        {campaignData.scheduledTime}
+                        {campaign.scheduledAt && new Date(campaign.scheduledAt).toLocaleString()}
                       </p>
                     </div>
                   </div>
@@ -423,10 +485,10 @@ export default function ReviewPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-1">
-                <ChecklistItem label="Subject line added" checked={true} />
-                <ChecklistItem label="Sender info complete" checked={true} />
-                <ChecklistItem label="Recipients selected" checked={true} />
-                <ChecklistItem label="Email content ready" checked={true} />
+                <ChecklistItem label="Subject line added" checked={!!campaign.subject} />
+                <ChecklistItem label="Sender info complete" checked={!!campaign.senderName && !!campaign.senderEmail} />
+                <ChecklistItem label="Recipients selected" checked={campaign.recipients > 0} />
+                <ChecklistItem label="Email content ready" checked={!!campaign.htmlContent} />
                 <ChecklistItem
                   label="Unsubscribe link"
                   checked={false}
@@ -441,14 +503,15 @@ export default function ReviewPage() {
                 className="w-full"
                 size="lg"
                 onClick={() => setConfirmSendOpen(true)}
+                disabled={!campaign.htmlContent || campaign.recipients === 0}
               >
                 <Send className="size-4" />
-                {campaignData.sendType === "now"
+                {campaign.sendType === "now"
                   ? "Send Campaign"
                   : "Schedule Campaign"}
               </Button>
               <Button variant="outline" className="w-full" asChild>
-                <Link href="/campaigns/email-editor">
+                <Link href={`/campaigns/email-editor?id=${campaign.id}`}>
                   <ArrowLeft className="size-4" />
                   Back to Editor
                 </Link>
@@ -463,22 +526,22 @@ export default function ReviewPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {campaignData.sendType === "now"
+              {campaign.sendType === "now"
                 ? "Send campaign now?"
                 : "Schedule campaign?"}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {campaignData.sendType === "now" ? (
+              {campaign.sendType === "now" ? (
                 <>
-                  You're about to send "{campaignData.name}" to{" "}
-                  <strong>{totalRecipients.toLocaleString()}</strong> recipients.
+                  You&apos;re about to send &quot;{campaign.name}&quot; to{" "}
+                  <strong>{campaign.recipients.toLocaleString()}</strong> recipients.
                   This action cannot be undone.
                 </>
               ) : (
                 <>
-                  Your campaign will be sent on {campaignData.scheduledDate} at{" "}
-                  {campaignData.scheduledTime} to{" "}
-                  <strong>{totalRecipients.toLocaleString()}</strong> recipients.
+                  Your campaign will be sent on {campaign.scheduledAt && new Date(campaign.scheduledAt).toLocaleDateString()} at{" "}
+                  {campaign.scheduledAt && new Date(campaign.scheduledAt).toLocaleTimeString()} to{" "}
+                  <strong>{campaign.recipients.toLocaleString()}</strong> recipients.
                 </>
               )}
             </AlertDialogDescription>
@@ -491,7 +554,7 @@ export default function ReviewPage() {
                   <Loader2 className="size-4 animate-spin" />
                   Sending...
                 </>
-              ) : campaignData.sendType === "now" ? (
+              ) : campaign.sendType === "now" ? (
                 <>
                   <Send className="size-4" />
                   Send Now
@@ -507,5 +570,23 @@ export default function ReviewPage() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+export default function ReviewPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-full bg-background">
+          <div className="max-w-4xl mx-auto px-4 py-8">
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="size-8 animate-spin text-muted-foreground" />
+            </div>
+          </div>
+        </div>
+      }
+    >
+      <ReviewPageContent />
+    </Suspense>
   );
 }

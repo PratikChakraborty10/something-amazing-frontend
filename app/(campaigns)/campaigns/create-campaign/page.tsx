@@ -1,21 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ChevronRight,
   Mail,
   Users,
-  Calendar,
   Clock,
   ArrowRight,
   Check,
   Plus,
   Search,
-  Tag,
   FileText,
   Sparkles,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -31,68 +30,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 
-// Mock contact lists (same as in lists page)
-interface ContactList {
-  id: string;
-  name: string;
-  description: string;
-  contactCount: number;
-  validCount: number;
-  tags: string[];
-}
-
-const mockLists: ContactList[] = [
-  {
-    id: "list_1",
-    name: "Q4 Product Launch Leads",
-    description: "Enterprise prospects for Q4 product launch campaign",
-    contactCount: 2847,
-    validCount: 2756,
-    tags: ["enterprise", "product-launch"],
-  },
-  {
-    id: "list_2",
-    name: "Newsletter Subscribers",
-    description: "Active newsletter subscribers from website signups",
-    contactCount: 12534,
-    validCount: 12089,
-    tags: ["newsletter", "organic"],
-  },
-  {
-    id: "list_3",
-    name: "Webinar Attendees - Nov 2024",
-    description: "Attendees from the November product demo webinar",
-    contactCount: 456,
-    validCount: 442,
-    tags: ["webinar", "warm-leads"],
-  },
-  {
-    id: "list_4",
-    name: "Partner Referrals",
-    description: "Leads from partner referral program",
-    contactCount: 1203,
-    validCount: 1156,
-    tags: ["partners", "referral"],
-  },
-  {
-    id: "list_5",
-    name: "Free Trial Signups",
-    description: "Users who signed up for free trial in last 30 days",
-    contactCount: 3421,
-    validCount: 3298,
-    tags: ["trial", "conversion"],
-  },
-];
+import { useAuthStore } from "@/lib/auth-store";
+import { getContactLists, ContactList } from "@/lib/contacts-api";
+import { createCampaign, SendType } from "@/lib/campaigns-api";
 
 function formatNumber(num: number): string {
   return num.toLocaleString();
@@ -100,6 +42,11 @@ function formatNumber(num: number): string {
 
 export default function CreateCampaignPage() {
   const router = useRouter();
+  const { accessToken } = useAuthStore();
+
+  // Contact lists
+  const [contactLists, setContactLists] = useState<ContactList[]>([]);
+  const [isLoadingLists, setIsLoadingLists] = useState(true);
 
   // Campaign details
   const [campaignName, setCampaignName] = useState("");
@@ -111,27 +58,50 @@ export default function CreateCampaignPage() {
   const [replyTo, setReplyTo] = useState("");
 
   // Scheduling
-  const [sendType, setSendType] = useState<"now" | "scheduled">("now");
+  const [sendType, setSendType] = useState<SendType>("now");
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduleTime, setScheduleTime] = useState("");
 
   // Contact lists selection
   const [selectedLists, setSelectedLists] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Validation
+  // Form state
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const filteredLists = mockLists.filter((list) => {
+  // Fetch contact lists
+  const fetchContactLists = useCallback(async () => {
+    if (!accessToken) return;
+
+    try {
+      setIsLoadingLists(true);
+      const response = await getContactLists(accessToken);
+      setContactLists(response.lists);
+    } catch (error) {
+      console.error("Failed to fetch contact lists:", error);
+      toast.error("Failed to load contact lists");
+    } finally {
+      setIsLoadingLists(false);
+    }
+  }, [accessToken]);
+
+  useEffect(() => {
+    fetchContactLists();
+  }, [fetchContactLists]);
+
+  const filteredLists = contactLists.filter((list) => {
     if (!searchQuery) return true;
     const query = searchQuery.toLowerCase();
     return (
       list.name.toLowerCase().includes(query) ||
-      list.description.toLowerCase().includes(query) ||
+      (list.description?.toLowerCase().includes(query) ?? false) ||
       list.tags.some((tag) => tag.toLowerCase().includes(query))
     );
   });
 
   const selectedCount = selectedLists.size;
-  const totalRecipients = mockLists
+  const totalRecipients = contactLists
     .filter((list) => selectedLists.has(list.id))
     .reduce((sum, list) => sum + list.validCount, 0);
 
@@ -167,22 +137,96 @@ export default function CreateCampaignPage() {
     if (selectedLists.size === 0) {
       newErrors.lists = "Select at least one contact list";
     }
+    if (sendType === "scheduled") {
+      if (!scheduleDate) {
+        newErrors.scheduleDate = "Schedule date is required";
+      }
+      if (!scheduleTime) {
+        newErrors.scheduleTime = "Schedule time is required";
+      }
+    }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleContinue = () => {
+  const handleContinue = async () => {
     if (!validate()) {
       toast.error("Please fill in all required fields");
       return;
     }
 
-    // Save campaign data (would be stored/sent to API in real app)
-    toast.success("Campaign details saved");
+    if (!accessToken) {
+      toast.error("Please log in to continue");
+      return;
+    }
 
-    // Navigate to email editor
-    router.push("/campaigns/email-editor");
+    try {
+      setIsSubmitting(true);
+
+      // Build scheduled date if applicable
+      let scheduledAt: string | undefined;
+      if (sendType === "scheduled" && scheduleDate && scheduleTime) {
+        scheduledAt = new Date(`${scheduleDate}T${scheduleTime}`).toISOString();
+      }
+
+      // Create the campaign via API
+      const campaign = await createCampaign(accessToken, {
+        name: campaignName,
+        description: campaignDescription || undefined,
+        subject,
+        preheader: preheader || undefined,
+        senderName,
+        senderEmail,
+        replyTo: replyTo || undefined,
+        sendType,
+        scheduledAt,
+        selectedListIds: Array.from(selectedLists),
+      });
+
+      toast.success("Campaign created");
+
+      // Navigate to email editor with campaign ID
+      router.push(`/campaigns/email-editor?id=${campaign.id}`);
+    } catch (error) {
+      console.error("Failed to create campaign:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to create campaign");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    if (!campaignName.trim()) {
+      toast.error("Campaign name is required to save as draft");
+      return;
+    }
+
+    if (!accessToken) {
+      toast.error("Please log in to continue");
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+
+      await createCampaign(accessToken, {
+        name: campaignName,
+        description: campaignDescription || undefined,
+        subject: subject || "Draft",
+        senderName: senderName || "Draft",
+        senderEmail: senderEmail || "draft@example.com",
+        selectedListIds: Array.from(selectedLists),
+      });
+
+      toast.success("Draft saved");
+      router.push("/campaigns");
+    } catch (error) {
+      console.error("Failed to save draft:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to save draft");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -476,13 +520,31 @@ export default function CreateCampaignPage() {
                     <Input
                       id="scheduleDate"
                       type="date"
-                      className="mt-1.5"
+                      className={`mt-1.5 ${errors.scheduleDate ? "border-destructive" : ""}`}
                       min={new Date().toISOString().split("T")[0]}
+                      value={scheduleDate}
+                      onChange={(e) => setScheduleDate(e.target.value)}
                     />
+                    {errors.scheduleDate && (
+                      <p className="text-sm text-destructive mt-1">
+                        {errors.scheduleDate}
+                      </p>
+                    )}
                   </div>
                   <div>
                     <Label htmlFor="scheduleTime">Time</Label>
-                    <Input id="scheduleTime" type="time" className="mt-1.5" />
+                    <Input
+                      id="scheduleTime"
+                      type="time"
+                      className={`mt-1.5 ${errors.scheduleTime ? "border-destructive" : ""}`}
+                      value={scheduleTime}
+                      onChange={(e) => setScheduleTime(e.target.value)}
+                    />
+                    {errors.scheduleTime && (
+                      <p className="text-sm text-destructive mt-1">
+                        {errors.scheduleTime}
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
@@ -530,7 +592,11 @@ export default function CreateCampaignPage() {
 
               {/* Lists */}
               <div className="space-y-2 max-h-[320px] overflow-y-auto">
-                {filteredLists.length === 0 ? (
+                {isLoadingLists ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="size-6 animate-spin text-muted-foreground" />
+                  </div>
+                ) : filteredLists.length === 0 ? (
                   <div className="text-center py-8">
                     <p className="text-muted-foreground">
                       No contact lists found
@@ -629,10 +695,20 @@ export default function CreateCampaignPage() {
               <Link href="/campaigns">Cancel</Link>
             </Button>
             <div className="flex items-center gap-3">
-              <Button variant="outline" onClick={() => toast.info("Draft saved")}>
+              <Button
+                variant="outline"
+                onClick={handleSaveDraft}
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? (
+                  <Loader2 className="size-4 mr-2 animate-spin" />
+                ) : null}
                 Save as Draft
               </Button>
-              <Button onClick={handleContinue}>
+              <Button onClick={handleContinue} disabled={isSubmitting}>
+                {isSubmitting ? (
+                  <Loader2 className="size-4 mr-2 animate-spin" />
+                ) : null}
                 Continue to Email Editor
                 <ArrowRight className="size-4" />
               </Button>

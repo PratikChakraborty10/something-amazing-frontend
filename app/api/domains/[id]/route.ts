@@ -1,37 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resend, transformDomain } from "@/lib/resend";
 
-// GET /api/domains/[id] - Get domain details
+const PLATFORM_API_URL =
+  process.env.PLATFORM_API_URL || "http://localhost:8000/api";
+
+// GET /api/domains/[id] - Get domain status
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
+    const authHeader = request.headers.get("Authorization");
 
-    const { data, error } = await resend.domains.get(id);
-
-    if (error) {
+    if (!authHeader) {
       return NextResponse.json(
-        { error: error.message },
-        { status: 400 }
+        { error: "Authorization header required" },
+        { status: 401 }
       );
     }
 
-    if (!data) {
-      return NextResponse.json(
-        { error: "Domain not found" },
-        { status: 404 }
-      );
+    const { id: domain } = await params;
+
+    const response = await fetch(`${PLATFORM_API_URL}/domains/${encodeURIComponent(domain)}`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: authHeader,
+      },
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return NextResponse.json(data, { status: response.status });
     }
 
-    const domain = transformDomain(data as any);
-
-    return NextResponse.json({ domain });
+    return NextResponse.json(data);
   } catch (err) {
-    console.error("Error getting domain:", err);
+    console.error("Error getting domain status:", err);
     return NextResponse.json(
-      { error: "Failed to get domain" },
+      { error: "Failed to get domain status" },
       { status: 500 }
     );
   }
@@ -43,18 +50,31 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params;
+    const authHeader = request.headers.get("Authorization");
 
-    const { error } = await resend.domains.remove(id);
-
-    if (error) {
+    if (!authHeader) {
       return NextResponse.json(
-        { error: error.message },
-        { status: 400 }
+        { error: "Authorization header required" },
+        { status: 401 }
       );
     }
 
-    return NextResponse.json({ success: true });
+    const { id: domain } = await params;
+
+    const response = await fetch(`${PLATFORM_API_URL}/domains/${encodeURIComponent(domain)}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: authHeader,
+      },
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      return NextResponse.json(data, { status: response.status });
+    }
+
+    return NextResponse.json({ message: "Domain deleted successfully" });
   } catch (err) {
     console.error("Error deleting domain:", err);
     return NextResponse.json(

@@ -1,22 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resend, transformDomain } from "@/lib/resend";
+
+const PLATFORM_API_URL =
+  process.env.PLATFORM_API_URL || "http://localhost:8000/api";
 
 // GET /api/domains - List all domains
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const { data, error } = await resend.domains.list();
+    const authHeader = request.headers.get("Authorization");
 
-    if (error) {
+    if (!authHeader) {
       return NextResponse.json(
-        { error: error.message },
-        { status: 400 }
+        { error: "Authorization header required" },
+        { status: 401 }
       );
     }
 
-    // Transform domains to frontend format
-    const domains = ((data?.data || []) as any[]).map(transformDomain);
+    const response = await fetch(`${PLATFORM_API_URL}/domains`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: authHeader,
+      },
+    });
 
-    return NextResponse.json({ domains });
+    const data = await response.json();
+
+    if (!response.ok) {
+      return NextResponse.json(data, { status: response.status });
+    }
+
+    return NextResponse.json(data);
   } catch (err) {
     console.error("Error listing domains:", err);
     return NextResponse.json(
@@ -26,43 +39,48 @@ export async function GET() {
   }
 }
 
-// POST /api/domains - Create a new domain
+// POST /api/domains - Verify a new domain
 export async function POST(request: NextRequest) {
   try {
+    const authHeader = request.headers.get("Authorization");
+
+    if (!authHeader) {
+      return NextResponse.json(
+        { error: "Authorization header required" },
+        { status: 401 }
+      );
+    }
+
     const body = await request.json();
-    const { name } = body;
+    const { domain } = body;
 
-    if (!name) {
+    if (!domain) {
       return NextResponse.json(
-        { error: "Domain name is required" },
+        { error: "Domain is required" },
         { status: 400 }
       );
     }
 
-    const { data, error } = await resend.domains.create({ name });
+    const response = await fetch(`${PLATFORM_API_URL}/domains`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: authHeader,
+      },
+      body: JSON.stringify({ domain }),
+    });
 
-    if (error) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: 400 }
-      );
+    const data = await response.json();
+
+    if (!response.ok) {
+      return NextResponse.json(data, { status: response.status });
     }
 
-    if (!data) {
-      return NextResponse.json(
-        { error: "Failed to create domain" },
-        { status: 500 }
-      );
-    }
-
-    // Transform to frontend format
-    const domain = transformDomain(data as any);
-
-    return NextResponse.json({ domain }, { status: 201 });
+    return NextResponse.json(data, { status: 201 });
   } catch (err) {
-    console.error("Error creating domain:", err);
+    console.error("Error verifying domain:", err);
     return NextResponse.json(
-      { error: "Failed to create domain" },
+      { error: "Failed to verify domain" },
       { status: 500 }
     );
   }

@@ -2,7 +2,12 @@
 // API Service Layer - Auth & Profile
 // ============================================================================
 
+import { authenticatedFetch } from "./api-client";
+
+// ============================================================================
 // Types
+// ============================================================================
+
 export interface User {
   id: string;
   email: string;
@@ -58,11 +63,24 @@ export interface UpdateProfileRequest {
 }
 
 // ============================================================================
-// API Functions
+// Error Handling (local to this module)
+// ============================================================================
+
+function parseApiError(data: unknown, fallback: string): string {
+  const error = data as ApiError;
+  const message = Array.isArray(error.message)
+    ? error.message.join(", ")
+    : error.message || fallback;
+  return message;
+}
+
+// ============================================================================
+// Public API Functions
 // ============================================================================
 
 /**
  * Sign in with email and password
+ * Note: Does NOT use authenticated fetch (no token yet)
  */
 export async function signIn(
   email: string,
@@ -77,11 +95,7 @@ export async function signIn(
   const data = await response.json();
 
   if (!response.ok) {
-    const error = data as ApiError;
-    const message = Array.isArray(error.message)
-      ? error.message.join(", ")
-      : error.message || "Failed to sign in";
-    throw new Error(message);
+    throw new Error(parseApiError(data, "Failed to sign in"));
   }
 
   return data;
@@ -89,6 +103,7 @@ export async function signIn(
 
 /**
  * Sign up a new user
+ * Note: Does NOT use authenticated fetch (no token yet)
  */
 export async function signUp(
   email: string,
@@ -105,11 +120,7 @@ export async function signUp(
   const data = await response.json();
 
   if (!response.ok) {
-    const error = data as ApiError;
-    const message = Array.isArray(error.message)
-      ? error.message.join(", ")
-      : error.message || "Failed to sign up";
-    throw new Error(message);
+    throw new Error(parseApiError(data, "Failed to sign up"));
   }
 
   return data;
@@ -117,24 +128,15 @@ export async function signUp(
 
 /**
  * Get current user profile
+ * Uses authenticatedFetch for automatic 401 handling.
  */
 export async function getProfile(accessToken: string): Promise<Profile> {
-  const response = await fetch("/api/profile", {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
+  const response = await authenticatedFetch("/api/profile", accessToken);
 
   const data = await response.json();
 
   if (!response.ok) {
-    const error = data as ApiError;
-    const message = Array.isArray(error.message)
-      ? error.message.join(", ")
-      : error.message || "Failed to get profile";
-    throw new Error(message);
+    throw new Error(parseApiError(data, "Failed to get profile"));
   }
 
   return data;
@@ -142,54 +144,39 @@ export async function getProfile(accessToken: string): Promise<Profile> {
 
 /**
  * Update user profile
+ * Uses authenticatedFetch for automatic 401 handling.
  */
 export async function updateProfile(
   accessToken: string,
-  data: UpdateProfileRequest
+  updateData: UpdateProfileRequest
 ): Promise<Profile> {
-  const response = await fetch("/api/profile", {
+  const response = await authenticatedFetch("/api/profile", accessToken, {
     method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify(data),
-  });
-
-  const responseData = await response.json();
-
-  if (!response.ok) {
-    const error = responseData as ApiError;
-    const message = Array.isArray(error.message)
-      ? error.message.join(", ")
-      : error.message || "Failed to update profile";
-    throw new Error(message);
-  }
-
-  return responseData;
-}
-
-/**
- * Get current authenticated user (from /auth/me)
- */
-export async function getCurrentUser(accessToken: string): Promise<User> {
-  const response = await fetch("/api/auth/me", {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    },
+    body: JSON.stringify(updateData),
   });
 
   const data = await response.json();
 
   if (!response.ok) {
-    const error = data as ApiError;
-    const message = Array.isArray(error.message)
-      ? error.message.join(", ")
-      : error.message || "Failed to get user";
-    throw new Error(message);
+    throw new Error(parseApiError(data, "Failed to update profile"));
   }
 
   return data;
 }
+
+/**
+ * Get current authenticated user (from /auth/me)
+ * Uses authenticatedFetch for automatic 401 handling.
+ */
+export async function getCurrentUser(accessToken: string): Promise<User> {
+  const response = await authenticatedFetch("/api/auth/me", accessToken);
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(parseApiError(data, "Failed to get user"));
+  }
+
+  return data;
+}
+

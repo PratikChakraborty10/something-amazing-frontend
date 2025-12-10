@@ -53,6 +53,14 @@ import {
 } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
+import { useAccessToken } from "@/lib/auth-store";
+import {
+  getDomainStatus,
+  deleteDomain,
+  BackendDomainResponse,
+  DomainStatus as ApiDomainStatus,
+} from "@/lib/domains-api";
+
 // Types
 type RecordStatus = "verified" | "pending" | "failed";
 
@@ -147,7 +155,8 @@ function CopyButton({ value, label }: { value: string; label?: string }) {
 export default function DomainDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const domainId = params.id as string;
+  const domainId = params.id as string; // This is now the domain string
+  const accessToken = useAccessToken();
 
   const [domain, setDomain] = useState<Domain | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -155,58 +164,89 @@ export default function DomainDetailPage() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
+  // Transform backend domain response to frontend Domain format
+  const transformBackendDomain = (data: BackendDomainResponse): Domain => {
+    const mapStatus = (status: ApiDomainStatus): RecordStatus => {
+      switch (status) {
+        case "Success":
+          return "verified";
+        case "Failed":
+        case "TemporaryFailure":
+          return "failed";
+        default:
+          return "pending";
+      }
+    };
+
+    return {
+      id: data.id || data.domain,
+      domain: data.domain,
+      status: mapStatus(data.verificationStatus),
+      createdAt: data.createdAt || new Date().toISOString(),
+      region: "us-east-1",
+      records: [
+        {
+          type: "TXT",
+          name: `_amazonses.${data.domain}`,
+          value: data.verificationToken,
+          ttl: "3600",
+          status: mapStatus(data.verificationStatus),
+        },
+        ...data.dkimTokens.map((token) => ({
+          type: "CNAME",
+          name: `${token}._domainkey.${data.domain}`,
+          value: `${token}.dkim.amazonses.com`,
+          ttl: "3600",
+          status: mapStatus(data.dkimVerificationStatus),
+        })),
+      ],
+    };
+  };
+
   // Fetch domain details
   const fetchDomain = useCallback(async () => {
+    if (!accessToken) {
+      setIsLoading(false);
+      return;
+    }
+    
     try {
-      const response = await fetch(`/api/domains/${domainId}`);
-      const data = await response.json();
-
-      if (response.ok) {
-        setDomain(data.domain);
-      } else {
-        toast.error(data.error || "Failed to load domain");
-        router.push("/settings/domains");
-      }
+      const data = await getDomainStatus(accessToken, domainId);
+      setDomain(transformBackendDomain(data));
     } catch (err) {
-      toast.error("Failed to load domain");
+      console.error("Failed to load domain:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to load domain");
       router.push("/settings/domains");
     } finally {
       setIsLoading(false);
     }
-  }, [domainId, router]);
+  }, [domainId, router, accessToken]);
 
   useEffect(() => {
     fetchDomain();
   }, [fetchDomain]);
 
-  // Verify domain
+  // Check domain verification status
   const handleVerify = async () => {
-    if (!domain) return;
+    if (!domain || !accessToken) return;
 
     setIsVerifying(true);
 
     try {
-      const response = await fetch(`/api/domains/${domainId}/verify`, {
-        method: "POST",
-      });
+      const data = await getDomainStatus(accessToken, domain.id);
+      const updatedDomain = transformBackendDomain(data);
+      setDomain(updatedDomain);
 
-      const data = await response.json();
-
-      if (response.ok) {
-        setDomain(data.domain);
-
-        if (data.domain.status === "verified") {
-          toast.success("All DNS records verified successfully!");
-        } else {
-          toast.info(
-            "Verification in progress. DNS changes can take up to 48 hours to propagate."
-          );
-        }
+      if (updatedDomain.status === "verified") {
+        toast.success("All DNS records verified successfully!");
       } else {
-        toast.error(data.error || "Verification failed");
+        toast.info(
+          "Verification in progress. DNS changes can take up to 48 hours to propagate."
+        );
       }
     } catch (err) {
-      toast.error("Failed to verify domain");
+      console.error("Failed to verify domain:", err);
+      toast.error(err instanceof Error ? err.message : "Verification failed");
     } finally {
       setIsVerifying(false);
     }
@@ -214,24 +254,17 @@ export default function DomainDetailPage() {
 
   // Delete domain
   const handleDelete = async () => {
-    if (!domain) return;
+    if (!domain || !accessToken) return;
 
     setIsDeleting(true);
 
     try {
-      const response = await fetch(`/api/domains/${domainId}`, {
-        method: "DELETE",
-      });
-
-      if (response.ok) {
-        toast.success(`${domain.domain} removed`);
-        router.push("/settings/domains");
-      } else {
-        const data = await response.json();
-        toast.error(data.error || "Failed to delete domain");
-      }
+      await deleteDomain(accessToken, domain.id);
+      toast.success(`${domain.domain} removed`);
+      router.push("/settings/domains");
     } catch (err) {
-      toast.error("Failed to delete domain");
+      console.error("Failed to delete domain:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to delete domain");
     } finally {
       setIsDeleting(false);
     }

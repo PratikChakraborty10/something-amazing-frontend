@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useState, useEffect, Suspense } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
@@ -30,22 +30,17 @@ import {
   Code,
   Quote,
   Minus,
-  Type,
   Eye,
   ArrowRight,
   ArrowLeft,
   Smartphone,
   Monitor,
-  Send,
   User,
   Building,
   Mail,
-  Palette,
   LayoutTemplate,
   Sparkles,
-  FileText,
-  Gift,
-  X,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -99,78 +94,22 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
+import { useAuthStore } from "@/lib/auth-store";
+import {
+  getCampaign,
+  updateCampaign,
+  getEmailTemplates,
+  getEmailTemplate,
+  Campaign,
+  EmailTemplate,
+} from "@/lib/campaigns-api";
+
 // Personalization tokens
 const personalizationTokens = [
   { label: "First Name", value: "{{firstName}}", icon: User },
   { label: "Last Name", value: "{{lastName}}", icon: User },
   { label: "Email", value: "{{email}}", icon: Mail },
   { label: "Company", value: "{{company}}", icon: Building },
-];
-
-// Email Template Type - easily extendable for backend integration
-interface EmailTemplate {
-  id: string;
-  name: string;
-  description: string;
-  category: string;
-  thumbnail?: string;
-  content: string;
-  tags: string[];
-}
-
-// Pre-built email templates
-// In the future, these will come from the backend API
-const emailTemplates: EmailTemplate[] = [
-  {
-    id: "welcome-email",
-    name: "Welcome Email",
-    description: "A warm welcome email for new subscribers or customers",
-    category: "Onboarding",
-    tags: ["welcome", "onboarding", "new-user"],
-    content: `
-      <h1>Welcome aboard, {{firstName}}! 🎉</h1>
-      <p>We're thrilled to have you join our community. You've made a great decision, and we can't wait to show you what's possible.</p>
-      
-      <h2>Here's what you can do next:</h2>
-      <ol>
-        <li><strong>Complete your profile</strong> — Add your details to personalize your experience</li>
-        <li><strong>Explore our features</strong> — Take a tour of everything we offer</li>
-        <li><strong>Connect with the community</strong> — Join discussions and meet other members</li>
-      </ol>
-      
-      <p>Need help getting started? Our support team is here for you 24/7. Just reply to this email or visit our help center.</p>
-      
-      <p>Welcome to the family!</p>
-      <p>Best regards,<br/><strong>The Team</strong></p>
-    `,
-  },
-  {
-    id: "product-announcement",
-    name: "Product Announcement",
-    description: "Announce new features, products, or updates to your audience",
-    category: "Marketing",
-    tags: ["product", "announcement", "launch"],
-    content: `
-      <h1>Exciting News: Introducing Our Latest Feature! ✨</h1>
-      <p>Hi {{firstName}},</p>
-      <p>We've been working hard on something special, and today we're excited to share it with you.</p>
-      
-      <h2>What's New</h2>
-      <p>Our new feature is designed to help you work smarter, not harder. Here's what you can expect:</p>
-      <ul>
-        <li><strong>Save time</strong> — Automate repetitive tasks with one click</li>
-        <li><strong>Stay organized</strong> — Keep everything in one place</li>
-        <li><strong>Collaborate better</strong> — Share with your team instantly</li>
-      </ul>
-      
-      <p><a href="#">Try it now →</a></p>
-      
-      <p>As always, we'd love to hear your feedback. Let us know what you think!</p>
-      
-      <p>Thanks for being part of our journey.</p>
-      <p>Best,<br/><strong>The Product Team</strong></p>
-    `,
-  },
 ];
 
 // Toolbar button component
@@ -416,8 +355,17 @@ function EditorToolbar({ editor, onInsertLink, onInsertImage }: EditorToolbarPro
   );
 }
 
-export default function EmailEditorPage() {
+function EmailEditorContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const campaignId = searchParams.get("id");
+  const { accessToken } = useAuthStore();
+
+  const [campaign, setCampaign] = useState<Campaign | null>(null);
+  const [templates, setTemplates] = useState<EmailTemplate[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+
   const [previewMode, setPreviewMode] = useState<"desktop" | "mobile">("desktop");
   const [showPreview, setShowPreview] = useState(false);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
@@ -427,14 +375,6 @@ export default function EmailEditorPage() {
   const [imageUrl, setImageUrl] = useState("");
   const [imageAlt, setImageAlt] = useState("");
   const [templatesOpen, setTemplatesOpen] = useState(false);
-
-  // Mock campaign data (would come from previous step in real app)
-  const campaignData = {
-    name: "December Newsletter",
-    subject: "Your December update is here!",
-    preheader: "Check out what's new this month",
-    recipientCount: 5420,
-  };
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -465,19 +405,7 @@ export default function EmailEditorPage() {
       TextStyle,
       Color,
     ],
-    content: `
-      <h1>Hello {{firstName}}! 👋</h1>
-      <p>Welcome to our December newsletter. We're excited to share what's new with you this month.</p>
-      <h2>What's New</h2>
-      <p>Here are the highlights from the past month:</p>
-      <ul>
-        <li>New feature launches</li>
-        <li>Product improvements</li>
-        <li>Upcoming events</li>
-      </ul>
-      <p>We hope you enjoy the updates!</p>
-      <p>Best regards,<br/>The Team</p>
-    `,
+    content: "",
     editorProps: {
       attributes: {
         class:
@@ -485,6 +413,54 @@ export default function EmailEditorPage() {
       },
     },
   });
+
+  // Fetch campaign and templates
+  useEffect(() => {
+    async function fetchData() {
+      if (!accessToken || !campaignId) {
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        setIsLoading(true);
+        const [campaignData, templatesData] = await Promise.all([
+          getCampaign(accessToken, campaignId),
+          getEmailTemplates(accessToken),
+        ]);
+
+        setCampaign(campaignData);
+        setTemplates(templatesData.data);
+
+        // Set editor content if campaign has content
+        if (campaignData.htmlContent && editor) {
+          editor.commands.setContent(campaignData.htmlContent);
+        } else if (editor) {
+          // Default content
+          editor.commands.setContent(`
+            <h1>Hello {{firstName}}! 👋</h1>
+            <p>Welcome to our newsletter. We're excited to share what's new with you.</p>
+            <h2>What's New</h2>
+            <p>Here are the highlights:</p>
+            <ul>
+              <li>New feature launches</li>
+              <li>Product improvements</li>
+              <li>Upcoming events</li>
+            </ul>
+            <p>We hope you enjoy the updates!</p>
+            <p>Best regards,<br/>The Team</p>
+          `);
+        }
+      } catch (error) {
+        console.error("Failed to fetch data:", error);
+        toast.error("Failed to load campaign data");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    fetchData();
+  }, [accessToken, campaignId, editor]);
 
   const handleInsertLink = useCallback(() => {
     if (!editor) return;
@@ -535,23 +511,51 @@ export default function EmailEditorPage() {
   }, [editor, imageUrl, imageAlt]);
 
   const handleBack = () => {
-    router.push("/create-campaign");
+    if (campaignId) {
+      router.push(`/campaigns/create-campaign?edit=${campaignId}`);
+    } else {
+      router.push("/campaigns/create-campaign");
+    }
   };
 
-  const handleContinue = () => {
-    if (!editor) return;
+  const handleSaveDraft = async () => {
+    if (!editor || !accessToken || !campaignId) return;
 
-    const htmlContent = editor.getHTML();
-    console.log("Email HTML:", htmlContent);
+    try {
+      setIsSaving(true);
+      await updateCampaign(accessToken, campaignId, {
+        htmlContent: editor.getHTML(),
+      });
+      toast.success("Draft saved");
+    } catch (error) {
+      console.error("Failed to save draft:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to save draft");
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
-    toast.success("Email saved successfully");
-    router.push("/campaigns/review");
+  const handleContinue = async () => {
+    if (!editor || !accessToken || !campaignId) return;
+
+    try {
+      setIsSaving(true);
+      await updateCampaign(accessToken, campaignId, {
+        htmlContent: editor.getHTML(),
+      });
+      toast.success("Email saved");
+      router.push(`/campaigns/review?id=${campaignId}`);
+    } catch (error) {
+      console.error("Failed to save:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to save");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const getPreviewHtml = () => {
     if (!editor) return "";
 
-    // Replace personalization tokens with sample data
     return editor
       .getHTML()
       .replace(/\{\{firstName\}\}/g, "John")
@@ -561,15 +565,57 @@ export default function EmailEditorPage() {
   };
 
   const handleUseTemplate = useCallback(
-    (template: EmailTemplate) => {
-      if (!editor) return;
+    async (template: EmailTemplate) => {
+      if (!editor || !accessToken) return;
 
-      editor.commands.setContent(template.content);
-      setTemplatesOpen(false);
-      toast.success(`Template "${template.name}" applied`);
+      try {
+        // Fetch full template with content
+        const fullTemplate = await getEmailTemplate(accessToken, template.id);
+        if (fullTemplate.content) {
+          editor.commands.setContent(fullTemplate.content);
+          setTemplatesOpen(false);
+          toast.success(`Template "${template.name}" applied`);
+        }
+      } catch (error) {
+        console.error("Failed to load template:", error);
+        toast.error("Failed to load template");
+      }
     },
-    [editor]
+    [editor, accessToken]
   );
+
+  if (!campaignId) {
+    return (
+      <div className="min-h-full bg-background">
+        <div className="max-w-6xl mx-auto px-4 py-8">
+          <Card className="rounded-2xl">
+            <CardContent className="py-16 text-center">
+              <Mail className="size-12 mx-auto mb-4 text-muted-foreground" />
+              <h3 className="text-lg font-semibold mb-2">No campaign selected</h3>
+              <p className="text-muted-foreground mb-4">
+                Please create a campaign first
+              </p>
+              <Button asChild>
+                <Link href="/campaigns/create-campaign">Create Campaign</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="min-h-full bg-background">
+        <div className="max-w-6xl mx-auto px-4 py-8">
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="size-8 animate-spin text-muted-foreground" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <TooltipProvider>
@@ -585,7 +631,7 @@ export default function EmailEditorPage() {
             </Link>
             <ChevronRight className="size-4" />
             <Link
-              href="/create-campaign"
+              href="/campaigns/create-campaign"
               className="hover:text-foreground transition-colors"
             >
               Create Campaign
@@ -619,12 +665,12 @@ export default function EmailEditorPage() {
                       Email Templates
                     </SheetTitle>
                     <SheetDescription>
-                      Choose a pre-built template to get started quickly. You can customize it after importing.
+                      Choose a pre-built template to get started quickly.
                     </SheetDescription>
                   </SheetHeader>
                   <ScrollArea className="h-[calc(100vh-140px)] mt-6 pr-4">
                     <div className="space-y-4">
-                      {emailTemplates.map((template) => (
+                      {templates.map((template) => (
                         <Card
                           key={template.id}
                           className="group cursor-pointer hover:border-primary/50 transition-colors"
@@ -652,18 +698,7 @@ export default function EmailEditorPage() {
                             </CardDescription>
                           </CardHeader>
                           <CardContent className="pt-0">
-                            <div className="border rounded-lg p-4 bg-muted/30 max-h-[200px] overflow-hidden relative">
-                              <div
-                                className="prose prose-sm max-w-none text-xs"
-                                dangerouslySetInnerHTML={{
-                                  __html: template.content
-                                    .replace(/\{\{firstName\}\}/g, "John")
-                                    .replace(/\{\{lastName\}\}/g, "Doe"),
-                                }}
-                              />
-                              <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-muted/80 to-transparent" />
-                            </div>
-                            <div className="flex gap-1 mt-3">
+                            <div className="flex gap-1">
                               {template.tags.map((tag) => (
                                 <Badge
                                   key={tag}
@@ -678,14 +713,15 @@ export default function EmailEditorPage() {
                         </Card>
                       ))}
 
-                      {/* Placeholder for more templates */}
-                      <div className="border-2 border-dashed rounded-xl p-6 text-center">
-                        <Sparkles className="size-8 mx-auto mb-3 text-muted-foreground" />
-                        <p className="font-medium">More templates coming soon</p>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          We're adding new templates regularly
-                        </p>
-                      </div>
+                      {templates.length === 0 && (
+                        <div className="border-2 border-dashed rounded-xl p-6 text-center">
+                          <Sparkles className="size-8 mx-auto mb-3 text-muted-foreground" />
+                          <p className="font-medium">No templates available</p>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            Templates will appear here when available
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </ScrollArea>
                 </SheetContent>
@@ -729,26 +765,28 @@ export default function EmailEditorPage() {
           </div>
 
           {/* Campaign Info Banner */}
-          <Card className="rounded-xl mb-6">
-            <CardContent className="py-4">
-              <div className="flex flex-wrap items-center gap-6 text-sm">
-                <div>
-                  <span className="text-muted-foreground">Campaign:</span>{" "}
-                  <span className="font-medium">{campaignData.name}</span>
+          {campaign && (
+            <Card className="rounded-xl mb-6">
+              <CardContent className="py-4">
+                <div className="flex flex-wrap items-center gap-6 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">Campaign:</span>{" "}
+                    <span className="font-medium">{campaign.name}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Subject:</span>{" "}
+                    <span className="font-medium">{campaign.subject}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Recipients:</span>{" "}
+                    <span className="font-medium">
+                      {campaign.recipients.toLocaleString()}
+                    </span>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-muted-foreground">Subject:</span>{" "}
-                  <span className="font-medium">{campaignData.subject}</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Recipients:</span>{" "}
-                  <span className="font-medium">
-                    {campaignData.recipientCount.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          )}
 
           <div
             className={`grid gap-6 ${
@@ -815,13 +853,13 @@ export default function EmailEditorPage() {
                     <div className="border-b px-4 py-3 bg-muted/30">
                       <p className="text-xs text-muted-foreground">From</p>
                       <p className="text-sm font-medium">
-                        Your Company &lt;hello@company.com&gt;
+                        {campaign?.senderName} &lt;{campaign?.senderEmail}&gt;
                       </p>
                       <p className="text-xs text-muted-foreground mt-2">
                         Subject
                       </p>
                       <p className="text-sm font-medium">
-                        {campaignData.subject}
+                        {campaign?.subject}
                       </p>
                     </div>
                     {/* Email body preview */}
@@ -842,10 +880,12 @@ export default function EmailEditorPage() {
               Back to Details
             </Button>
             <div className="flex items-center gap-3">
-              <Button variant="outline" onClick={() => toast.info("Draft saved")}>
+              <Button variant="outline" onClick={handleSaveDraft} disabled={isSaving}>
+                {isSaving && <Loader2 className="size-4 mr-2 animate-spin" />}
                 Save as Draft
               </Button>
-              <Button onClick={handleContinue}>
+              <Button onClick={handleContinue} disabled={isSaving}>
+                {isSaving && <Loader2 className="size-4 mr-2 animate-spin" />}
                 Continue to Review
                 <ArrowRight className="size-4" />
               </Button>
@@ -932,5 +972,23 @@ export default function EmailEditorPage() {
         </DialogContent>
       </Dialog>
     </TooltipProvider>
+  );
+}
+
+export default function EmailEditorPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-full bg-background">
+          <div className="max-w-6xl mx-auto px-4 py-8">
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="size-8 animate-spin text-muted-foreground" />
+            </div>
+          </div>
+        </div>
+      }
+    >
+      <EmailEditorContent />
+    </Suspense>
   );
 }

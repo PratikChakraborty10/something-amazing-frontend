@@ -63,6 +63,16 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+import { useAccessToken } from "@/lib/auth-store";
+import {
+  listDomains,
+  verifyDomain,
+  getDomainStatus,
+  deleteDomain,
+  BackendDomainResponse,
+  DomainStatus as ApiDomainStatus,
+} from "@/lib/domains-api";
+
 // Domain types
 type DomainStatus = "verified" | "pending" | "failed";
 
@@ -119,6 +129,8 @@ function formatDate(dateString: string): string {
 }
 
 export default function DomainsPage() {
+  const accessToken = useAccessToken();
+  
   const [domains, setDomains] = useState<Domain[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -132,23 +144,64 @@ export default function DomainsPage() {
   const verifiedCount = domains.filter((d) => d.status === "verified").length;
   const pendingCount = domains.filter((d) => d.status === "pending").length;
 
+  // Transform backend domain response to frontend Domain format
+  const transformBackendDomain = (data: BackendDomainResponse): Domain => {
+    const mapStatus = (status: ApiDomainStatus): DomainStatus => {
+      switch (status) {
+        case "Success":
+          return "verified";
+        case "Failed":
+        case "TemporaryFailure":
+          return "failed";
+        default:
+          return "pending";
+      }
+    };
+
+    return {
+      id: data.id || data.domain,
+      domain: data.domain,
+      status: mapStatus(data.verificationStatus),
+      createdAt: data.createdAt || new Date().toISOString(),
+      region: "us-east-1",
+      records: [
+        {
+          type: "TXT",
+          name: `_amazonses.${data.domain}`,
+          value: data.verificationToken,
+          ttl: "3600",
+          status: mapStatus(data.verificationStatus),
+        },
+        ...data.dkimTokens.map((token) => ({
+          type: "CNAME",
+          name: `${token}._domainkey.${data.domain}`,
+          value: `${token}.dkim.amazonses.com`,
+          ttl: "3600",
+          status: mapStatus(data.dkimVerificationStatus),
+        })),
+      ],
+    };
+  };
+
   // Fetch domains from API
   const fetchDomains = useCallback(async () => {
+    if (!accessToken) {
+      setIsLoading(false);
+      return;
+    }
+    
     try {
-      const response = await fetch("/api/domains");
-      const data = await response.json();
-
-      if (response.ok) {
-        setDomains(data.domains || []);
-      } else {
-        toast.error(data.error || "Failed to load domains");
-      }
+      const domainList = await listDomains(accessToken);
+      // Backend now returns full domain objects, transform them
+      const transformedDomains = domainList.map(transformBackendDomain);
+      setDomains(transformedDomains);
     } catch (err) {
+      console.error("Failed to load domains:", err);
       toast.error("Failed to load domains");
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [accessToken]);
 
   useEffect(() => {
     fetchDomains();
@@ -156,6 +209,11 @@ export default function DomainsPage() {
 
   // Add domain
   const handleAddDomain = async () => {
+    if (!accessToken) {
+      toast.error("Please log in to add a domain");
+      return;
+    }
+    
     if (!newDomain.trim()) {
       toast.error("Please enter a domain");
       return;
@@ -172,60 +230,50 @@ export default function DomainsPage() {
     setIsAdding(true);
 
     try {
-      const response = await fetch("/api/domains", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newDomain }),
-      });
-
-      const data = await response.json();
-
-      if (response.ok) {
-        setDomains((prev) => [...prev, data.domain]);
-        setNewDomain("");
-        setAddDialogOpen(false);
-        toast.success(
-          `Domain ${newDomain} added. Please configure DNS records.`
-        );
-      } else {
-        toast.error(data.error || "Failed to add domain");
-      }
+      const data = await verifyDomain(accessToken, newDomain);
+      const domain = transformBackendDomain(data);
+      setDomains((prev) => [...prev, domain]);
+      setNewDomain("");
+      setAddDialogOpen(false);
+      toast.success(
+        `Domain ${newDomain} added. Please configure DNS records.`
+      );
     } catch (err) {
-      toast.error("Failed to add domain");
+      console.error("Failed to add domain:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to add domain");
     } finally {
       setIsAdding(false);
     }
   };
 
-  // Verify domain
+  // Check domain verification status
   const handleVerify = async (domain: Domain) => {
+    if (!accessToken) {
+      toast.error("Please log in to verify domain");
+      return;
+    }
+    
     setIsVerifying(domain.id);
 
     try {
-      const response = await fetch(`/api/domains/${domain.id}/verify`, {
-        method: "POST",
-      });
+      const data = await getDomainStatus(accessToken, domain.id);
+      const updatedDomain = transformBackendDomain(data);
+      
+      // Update domain in state
+      setDomains((prev) =>
+        prev.map((d) => (d.id === domain.id ? updatedDomain : d))
+      );
 
-      const data = await response.json();
-
-      if (response.ok) {
-        // Update domain in state
-        setDomains((prev) =>
-          prev.map((d) => (d.id === domain.id ? data.domain : d))
-        );
-
-        if (data.domain.status === "verified") {
-          toast.success(`${domain.domain} verified successfully!`);
-        } else {
-          toast.info(
-            "Verification in progress. DNS records may take time to propagate."
-          );
-        }
+      if (updatedDomain.status === "verified") {
+        toast.success(`${domain.domain} verified successfully!`);
       } else {
-        toast.error(data.error || "Verification failed");
+        toast.info(
+          "Verification in progress. DNS records may take time to propagate."
+        );
       }
     } catch (err) {
-      toast.error("Failed to verify domain");
+      console.error("Failed to verify domain:", err);
+      toast.error(err instanceof Error ? err.message : "Verification failed");
     } finally {
       setIsVerifying(null);
     }
@@ -233,26 +281,19 @@ export default function DomainsPage() {
 
   // Delete domain
   const handleDelete = async () => {
-    if (!selectedDomain) return;
+    if (!selectedDomain || !accessToken) return;
 
     setIsDeleting(true);
 
     try {
-      const response = await fetch(`/api/domains/${selectedDomain.id}`, {
-        method: "DELETE",
-      });
-
-      if (response.ok) {
-        setDomains((prev) => prev.filter((d) => d.id !== selectedDomain.id));
-        toast.success(`${selectedDomain.domain} removed`);
-        setDeleteDialogOpen(false);
-        setSelectedDomain(null);
-      } else {
-        const data = await response.json();
-        toast.error(data.error || "Failed to delete domain");
-      }
+      await deleteDomain(accessToken, selectedDomain.id);
+      setDomains((prev) => prev.filter((d) => d.id !== selectedDomain.id));
+      toast.success(`${selectedDomain.domain} removed`);
+      setDeleteDialogOpen(false);
+      setSelectedDomain(null);
     } catch (err) {
-      toast.error("Failed to delete domain");
+      console.error("Failed to delete domain:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to delete domain");
     } finally {
       setIsDeleting(false);
     }

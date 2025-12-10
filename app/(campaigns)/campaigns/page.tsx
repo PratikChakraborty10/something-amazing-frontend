@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
 import {
   Mail,
@@ -22,6 +22,7 @@ import {
   FileEdit,
   Pause,
   ArrowRight,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -30,9 +31,6 @@ import { Input } from "@/components/ui/input";
 import {
   Card,
   CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -69,112 +67,15 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-// Campaign status type
-type CampaignStatus = "draft" | "scheduled" | "sending" | "sent" | "paused" | "failed";
-
-// Campaign interface
-interface Campaign {
-  id: string;
-  name: string;
-  subject: string;
-  status: CampaignStatus;
-  createdAt: Date;
-  scheduledAt?: Date;
-  sentAt?: Date;
-  recipients: number;
-  delivered?: number;
-  opened?: number;
-  clicked?: number;
-  listName: string;
-}
-
-// Mock campaigns data
-const mockCampaigns: Campaign[] = [
-  {
-    id: "camp_1",
-    name: "December Newsletter",
-    subject: "Your December update is here!",
-    status: "sent",
-    createdAt: new Date("2024-12-01"),
-    sentAt: new Date("2024-12-05T10:00:00"),
-    recipients: 5420,
-    delivered: 5380,
-    opened: 2156,
-    clicked: 432,
-    listName: "Newsletter Subscribers",
-  },
-  {
-    id: "camp_2",
-    name: "Black Friday Sale",
-    subject: "🎉 50% OFF Everything - Today Only!",
-    status: "sent",
-    createdAt: new Date("2024-11-28"),
-    sentAt: new Date("2024-11-29T08:00:00"),
-    recipients: 12500,
-    delivered: 12350,
-    opened: 6175,
-    clicked: 1853,
-    listName: "All Customers",
-  },
-  {
-    id: "camp_3",
-    name: "Product Launch Announcement",
-    subject: "Introducing our newest feature",
-    status: "scheduled",
-    createdAt: new Date("2024-12-04"),
-    scheduledAt: new Date("2024-12-10T09:00:00"),
-    recipients: 8900,
-    listName: "Product Updates",
-  },
-  {
-    id: "camp_4",
-    name: "Weekly Tips #42",
-    subject: "5 ways to boost your productivity",
-    status: "draft",
-    createdAt: new Date("2024-12-05"),
-    recipients: 0,
-    listName: "Tips & Tricks",
-  },
-  {
-    id: "camp_5",
-    name: "Holiday Greetings",
-    subject: "Happy Holidays from our team!",
-    status: "draft",
-    createdAt: new Date("2024-12-06"),
-    recipients: 15000,
-    listName: "All Subscribers",
-  },
-  {
-    id: "camp_6",
-    name: "Re-engagement Campaign",
-    subject: "We miss you! Here's 20% off",
-    status: "draft",
-    createdAt: new Date("2024-12-03"),
-    recipients: 2340,
-    listName: "Inactive Users",
-  },
-  {
-    id: "camp_7",
-    name: "Q4 Report",
-    subject: "Your quarterly insights are ready",
-    status: "sending",
-    createdAt: new Date("2024-12-06"),
-    recipients: 4200,
-    delivered: 1680,
-    listName: "Enterprise Customers",
-  },
-  {
-    id: "camp_8",
-    name: "Welcome Series - Day 1",
-    subject: "Welcome to the family!",
-    status: "paused",
-    createdAt: new Date("2024-11-15"),
-    recipients: 890,
-    delivered: 445,
-    opened: 356,
-    listName: "New Signups",
-  },
-];
+import { useAuthStore } from "@/lib/auth-store";
+import {
+  getCampaigns,
+  deleteCampaign,
+  duplicateCampaign,
+  Campaign,
+  CampaignStatus,
+  CampaignStats,
+} from "@/lib/campaigns-api";
 
 // Sort options
 type SortField = "createdAt" | "name" | "recipients" | "status";
@@ -227,7 +128,8 @@ function StatusBadge({ status }: { status: CampaignStatus }) {
   }
 }
 
-function formatDate(date: Date): string {
+function formatDate(dateString: string): string {
+  const date = new Date(dateString);
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -235,7 +137,8 @@ function formatDate(date: Date): string {
   });
 }
 
-function formatDateTime(date: Date): string {
+function formatDateTime(dateString: string): string {
+  const date = new Date(dateString);
   return date.toLocaleString("en-US", {
     month: "short",
     day: "numeric",
@@ -259,7 +162,21 @@ function calculateClickRate(clicked?: number, delivered?: number): string {
 }
 
 export default function CampaignsPage() {
-  const [campaigns, setCampaigns] = useState<Campaign[]>(mockCampaigns);
+  const { accessToken } = useAuthStore();
+  
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [stats, setStats] = useState<CampaignStats>({
+    totalCampaigns: 0,
+    drafts: 0,
+    scheduled: 0,
+    sent: 0,
+    avgOpenRate: 0,
+    avgClickRate: 0,
+  });
+  const [isLoading, setIsLoading] = useState(true);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isDuplicating, setIsDuplicating] = useState(false);
+  
   const [searchQuery, setSearchQuery] = useState("");
   const [sortField, setSortField] = useState<SortField>("createdAt");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
@@ -267,7 +184,33 @@ export default function CampaignsPage() {
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
   const [activeTab, setActiveTab] = useState("all");
 
-  // Separate drafts and other campaigns
+  // Fetch campaigns
+  const fetchCampaigns = useCallback(async () => {
+    if (!accessToken) return;
+    
+    try {
+      setIsLoading(true);
+      const response = await getCampaigns(accessToken, {
+        sortBy: sortField,
+        sortOrder: sortDirection,
+        search: searchQuery || undefined,
+        status: activeTab === "all" ? undefined : activeTab === "active" ? undefined : "draft",
+      });
+      setCampaigns(response.data);
+      setStats(response.stats);
+    } catch (error) {
+      console.error("Failed to fetch campaigns:", error);
+      toast.error("Failed to load campaigns");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [accessToken, sortField, sortDirection, searchQuery, activeTab]);
+
+  useEffect(() => {
+    fetchCampaigns();
+  }, [fetchCampaigns]);
+
+  // Separate drafts and other campaigns for tabs
   const drafts = useMemo(
     () => campaigns.filter((c) => c.status === "draft"),
     [campaigns]
@@ -278,91 +221,60 @@ export default function CampaignsPage() {
     [campaigns]
   );
 
-  // Filter and sort campaigns
+  // Filter campaigns by tab (additional client-side filtering)
   const filteredCampaigns = useMemo(() => {
-    let filtered =
-      activeTab === "drafts"
-        ? drafts
-        : activeTab === "all"
-        ? campaigns
-        : activeCampaigns;
+    if (activeTab === "drafts") return drafts;
+    if (activeTab === "active") return activeCampaigns;
+    return campaigns;
+  }, [campaigns, drafts, activeCampaigns, activeTab]);
 
-    // Apply search filter
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        (c) =>
-          c.name.toLowerCase().includes(query) ||
-          c.subject.toLowerCase().includes(query) ||
-          c.listName.toLowerCase().includes(query)
-      );
-    }
-
-    // Apply sorting
-    filtered = [...filtered].sort((a, b) => {
-      let comparison = 0;
-      switch (sortField) {
-        case "createdAt":
-          comparison = a.createdAt.getTime() - b.createdAt.getTime();
-          break;
-        case "name":
-          comparison = a.name.localeCompare(b.name);
-          break;
-        case "recipients":
-          comparison = a.recipients - b.recipients;
-          break;
-        case "status":
-          comparison = a.status.localeCompare(b.status);
-          break;
-      }
-      return sortDirection === "asc" ? comparison : -comparison;
-    });
-
-    return filtered;
-  }, [campaigns, drafts, activeCampaigns, searchQuery, sortField, sortDirection, activeTab]);
-
-  // Stats
-  const stats = useMemo(() => {
-    const sent = campaigns.filter((c) => c.status === "sent");
-    const totalDelivered = sent.reduce((sum, c) => sum + (c.delivered || 0), 0);
-    const totalOpened = sent.reduce((sum, c) => sum + (c.opened || 0), 0);
-    const totalClicked = sent.reduce((sum, c) => sum + (c.clicked || 0), 0);
-
-    return {
-      totalCampaigns: campaigns.length,
-      drafts: drafts.length,
-      scheduled: campaigns.filter((c) => c.status === "scheduled").length,
-      sent: sent.length,
-      avgOpenRate: totalDelivered > 0 ? ((totalOpened / totalDelivered) * 100).toFixed(1) : "0",
-      avgClickRate: totalDelivered > 0 ? ((totalClicked / totalDelivered) * 100).toFixed(1) : "0",
-    };
-  }, [campaigns, drafts]);
-
-  const handleDelete = () => {
-    if (selectedCampaign) {
-      setCampaigns((prev) => prev.filter((c) => c.id !== selectedCampaign.id));
+  const handleDelete = async () => {
+    if (!selectedCampaign || !accessToken) return;
+    
+    try {
+      setIsDeleting(true);
+      await deleteCampaign(accessToken, selectedCampaign.id);
       toast.success(`"${selectedCampaign.name}" deleted`);
       setDeleteDialogOpen(false);
       setSelectedCampaign(null);
+      // Refresh the list
+      fetchCampaigns();
+    } catch (error) {
+      console.error("Failed to delete campaign:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to delete campaign");
+    } finally {
+      setIsDeleting(false);
     }
   };
 
-  const handleDuplicate = (campaign: Campaign) => {
-    const newCampaign: Campaign = {
-      ...campaign,
-      id: `camp_${Date.now()}`,
-      name: `${campaign.name} (Copy)`,
-      status: "draft",
-      createdAt: new Date(),
-      scheduledAt: undefined,
-      sentAt: undefined,
-      delivered: undefined,
-      opened: undefined,
-      clicked: undefined,
-    };
-    setCampaigns((prev) => [newCampaign, ...prev]);
-    toast.success(`"${campaign.name}" duplicated`);
+  const handleDuplicate = async (campaign: Campaign) => {
+    if (!accessToken) return;
+    
+    try {
+      setIsDuplicating(true);
+      await duplicateCampaign(accessToken, campaign.id);
+      toast.success(`"${campaign.name}" duplicated`);
+      // Refresh the list
+      fetchCampaigns();
+    } catch (error) {
+      console.error("Failed to duplicate campaign:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to duplicate campaign");
+    } finally {
+      setIsDuplicating(false);
+    }
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-full bg-background">
+        <div className="max-w-7xl mx-auto px-4 py-8">
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="size-8 animate-spin text-muted-foreground" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-full bg-background">
@@ -498,6 +410,7 @@ export default function CampaignsPage() {
                   setDeleteDialogOpen(true);
                 }}
                 onDuplicate={handleDuplicate}
+                isDuplicating={isDuplicating}
               />
             </TabsContent>
             <TabsContent value="active" className="mt-0">
@@ -508,6 +421,7 @@ export default function CampaignsPage() {
                   setDeleteDialogOpen(true);
                 }}
                 onDuplicate={handleDuplicate}
+                isDuplicating={isDuplicating}
               />
             </TabsContent>
             <TabsContent value="drafts" className="mt-0">
@@ -519,6 +433,7 @@ export default function CampaignsPage() {
                 }}
                 onDuplicate={handleDuplicate}
                 showDraftActions
+                isDuplicating={isDuplicating}
               />
             </TabsContent>
           </Tabs>
@@ -531,14 +446,21 @@ export default function CampaignsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete campaign?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete "{selectedCampaign?.name}". This
+              This will permanently delete &quot;{selectedCampaign?.name}&quot;. This
               action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete}>
-              Delete Campaign
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete} disabled={isDeleting}>
+              {isDeleting ? (
+                <>
+                  <Loader2 className="size-4 mr-2 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                "Delete Campaign"
+              )}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -553,11 +475,13 @@ function CampaignsTable({
   onDelete,
   onDuplicate,
   showDraftActions = false,
+  isDuplicating = false,
 }: {
   campaigns: Campaign[];
   onDelete: (campaign: Campaign) => void;
   onDuplicate: (campaign: Campaign) => void;
   showDraftActions?: boolean;
+  isDuplicating?: boolean;
 }) {
   if (campaigns.length === 0) {
     return (
@@ -702,7 +626,10 @@ function CampaignsTable({
                           View Details
                         </Link>
                       </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onDuplicate(campaign)}>
+                      <DropdownMenuItem 
+                        onClick={() => onDuplicate(campaign)}
+                        disabled={isDuplicating}
+                      >
                         <Copy className="size-4 mr-2" />
                         Duplicate
                       </DropdownMenuItem>

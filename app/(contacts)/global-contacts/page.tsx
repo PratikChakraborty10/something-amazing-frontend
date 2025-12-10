@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import Link from "next/link";
 import {
   Upload,
@@ -83,17 +83,16 @@ import {
 } from "@/components/ui/tooltip";
 
 import {
-  Contact,
+  Contact as LocalContact,
   ParsedColumn,
   CanonicalField,
-  DedupeStrategy,
+  DedupeStrategy as LocalDedupeStrategy,
   parseCSV,
   extractEmailsFromText,
   suggestColumnMapping,
-  createContact,
+  createContact as createLocalContact,
   validateContact,
   deduplicateContacts,
-  markDuplicates,
   contactsToCSV,
   downloadFile,
   getContactStats,
@@ -101,6 +100,20 @@ import {
   extractDomain,
   generateId,
 } from "@/lib/contact-utils";
+import { useAccessToken } from "@/lib/auth-store";
+import {
+  Contact,
+  ContactStats,
+  DedupeStrategy,
+  createContact,
+  bulkImportContacts,
+  getContacts,
+  getContactStats as fetchContactStats,
+  updateContact,
+  deleteContact,
+  deleteContacts,
+  createContactList,
+} from "@/lib/contacts-api";
 
 // Empty state component
 function EmptyState({ onUpload, onAddManual }: { onUpload: () => void; onAddManual: () => void }) {
@@ -135,7 +148,7 @@ function EmptyState({ onUpload, onAddManual }: { onUpload: () => void; onAddManu
 }
 
 // Status badge component
-function StatusBadge({ status, errors }: { status: Contact["status"]; errors?: string[] }) {
+function StatusBadge({ status, errors }: { status: LocalContact["status"]; errors?: string[] }) {
   if (status === "valid") {
     return (
       <Badge variant="secondary" className="bg-primary/10 text-primary hover:bg-primary/20">
@@ -268,6 +281,9 @@ function EditableCell({
 }
 
 export default function GlobalContactsPage() {
+  // Auth
+  const accessToken = useAccessToken();
+
   // State
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -276,6 +292,13 @@ export default function GlobalContactsPage() {
   const [domainFilter, setDomainFilter] = useState<string>("all");
   const [autoDedupe, setAutoDedupe] = useState(true);
   const [dedupeStrategy, setDedupeStrategy] = useState<DedupeStrategy>("keepLast");
+
+  // Loading states
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Stats from API
+  const [apiStats, setApiStats] = useState<ContactStats | null>(null);
 
   // Import state
   const [parsedColumns, setParsedColumns] = useState<ParsedColumn[]>([]);
@@ -296,12 +319,74 @@ export default function GlobalContactsPage() {
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [showClearDialog, setShowClearDialog] = useState(false);
   const [listName, setListName] = useState("");
+  const [listDescription, setListDescription] = useState("");
   const [activeTab, setActiveTab] = useState("upload");
+
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalContacts, setTotalContacts] = useState(0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Computed values
-  const stats = useMemo(() => getContactStats(contacts), [contacts]);
+  // Fetch contacts from API
+  const fetchContacts = useCallback(async () => {
+    if (!accessToken) return;
+
+    try {
+      setIsLoading(true);
+      const response = await getContacts(accessToken, {
+        page: currentPage,
+        limit: 50,
+        search: searchQuery || undefined,
+        status: statusFilter !== "all" ? statusFilter : undefined,
+        domain: domainFilter !== "all" ? domainFilter : undefined,
+      });
+      setContacts(response.contacts);
+      setTotalPages(response.pagination.totalPages);
+      setTotalContacts(response.pagination.total);
+    } catch (error) {
+      console.error("Failed to fetch contacts:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to load contacts");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [accessToken, currentPage, searchQuery, statusFilter, domainFilter]);
+
+  // Fetch stats from API
+  const fetchStats = useCallback(async () => {
+    if (!accessToken) return;
+
+    try {
+      const stats = await fetchContactStats(accessToken);
+      setApiStats(stats);
+    } catch (error) {
+      console.error("Failed to fetch stats:", error);
+    }
+  }, [accessToken]);
+
+  // Load contacts and stats on mount and when filters change
+  useEffect(() => {
+    fetchContacts();
+  }, [fetchContacts]);
+
+  useEffect(() => {
+    fetchStats();
+  }, [fetchStats]);
+
+  // Computed values - use API stats if available, otherwise compute locally
+  const stats = useMemo(() => {
+    if (apiStats) {
+      return {
+        total: apiStats.total,
+        valid: apiStats.valid,
+        invalid: apiStats.invalid,
+        duplicate: apiStats.duplicate,
+        topDomains: apiStats.topDomains,
+      };
+    }
+    return getContactStats(contacts as unknown as LocalContact[]);
+  }, [apiStats, contacts]);
 
   const filteredContacts = useMemo(() => {
     return contacts.filter((contact) => {
@@ -310,9 +395,9 @@ export default function GlobalContactsPage() {
         const query = searchQuery.toLowerCase();
         const matchesSearch =
           contact.email.toLowerCase().includes(query) ||
-          contact.firstName.toLowerCase().includes(query) ||
-          contact.lastName.toLowerCase().includes(query) ||
-          contact.company.toLowerCase().includes(query);
+          (contact.firstName?.toLowerCase().includes(query) ?? false) ||
+          (contact.lastName?.toLowerCase().includes(query) ?? false) ||
+          (contact.company?.toLowerCase().includes(query) ?? false);
         if (!matchesSearch) return false;
       }
 
@@ -396,7 +481,12 @@ export default function GlobalContactsPage() {
     [handleFileSelect]
   );
 
-  const confirmMapping = useCallback(() => {
+  const confirmMapping = useCallback(async () => {
+    if (!accessToken) {
+      toast.error("Please log in to import contacts");
+      return;
+    }
+
     // Find email column
     const emailColIndex = parsedColumns.findIndex((c) => c.mappedTo === "email");
     if (emailColIndex === -1) {
@@ -404,12 +494,10 @@ export default function GlobalContactsPage() {
       return;
     }
 
-    // Create contacts from rows
-    const newContacts: Contact[] = parsedRows.map((row) => {
-      const data: Partial<Contact> = {
-        id: generateId(),
-        tags: [],
-        customMeta: {},
+    // Create contacts data from rows
+    const contactsData = parsedRows.map((row) => {
+      const data: { email: string; firstName?: string; lastName?: string; company?: string; role?: string; tags?: string[] } = {
+        email: "",
       };
 
       parsedColumns.forEach((col, index) => {
@@ -439,51 +527,39 @@ export default function GlobalContactsPage() {
         }
       });
 
-      return createContact(data);
-    });
+      return data;
+    }).filter(c => c.email); // Filter out empty emails
 
-    // Check for duplicates
-    const existingEmails = new Set(contacts.map((c) => c.email.toLowerCase()));
-    const newEmails = new Set<string>();
-    const duplicatesInNew: string[] = [];
-    const duplicatesWithExisting: string[] = [];
+    try {
+      setIsSubmitting(true);
+      const result = await bulkImportContacts(accessToken, {
+        contacts: contactsData,
+        dedupeStrategy: dedupeStrategy,
+      });
 
-    for (const contact of newContacts) {
-      const email = contact.email.toLowerCase();
-      if (existingEmails.has(email)) {
-        duplicatesWithExisting.push(email);
-      } else if (newEmails.has(email)) {
-        duplicatesInNew.push(email);
-      } else {
-        newEmails.add(email);
-      }
+      setShowMappingModal(false);
+      setParsedColumns([]);
+      setParsedRows([]);
+
+      // Refresh contacts list
+      await fetchContacts();
+      await fetchStats();
+
+      toast.success(`Imported ${result.imported} contacts (${result.duplicates} duplicates handled, ${result.skipped} skipped)`);
+    } catch (error) {
+      console.error("Failed to import contacts:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to import contacts");
+    } finally {
+      setIsSubmitting(false);
     }
+  }, [accessToken, parsedColumns, parsedRows, dedupeStrategy, fetchContacts, fetchStats]);
 
-    const hasDuplicates = duplicatesWithExisting.length > 0 || duplicatesInNew.length > 0;
-
-    if (!autoDedupe && hasDuplicates) {
-      const totalDupes = duplicatesWithExisting.length + duplicatesInNew.length;
-      toast.error(`Import rejected: ${totalDupes} duplicate email(s) found. Enable auto-deduplicate or remove duplicates from your file.`);
+  const handleParsePaste = useCallback(async () => {
+    if (!accessToken) {
+      toast.error("Please log in to import contacts");
       return;
     }
 
-    // Apply deduplication if enabled
-    let processedContacts = newContacts;
-    if (autoDedupe) {
-      processedContacts = deduplicateContacts([...contacts, ...newContacts], dedupeStrategy);
-    } else {
-      processedContacts = [...contacts, ...newContacts];
-    }
-
-    setContacts(processedContacts);
-    setShowMappingModal(false);
-    setParsedColumns([]);
-    setParsedRows([]);
-
-    toast.success(`Imported ${newContacts.length} contacts`);
-  }, [parsedColumns, parsedRows, contacts, autoDedupe, dedupeStrategy]);
-
-  const handleParsePaste = useCallback(() => {
     if (!pasteText.trim()) {
       toast.error("Please paste some text containing email addresses");
       return;
@@ -496,30 +572,38 @@ export default function GlobalContactsPage() {
       return;
     }
 
-    const newContacts = extracted.map((data) => createContact(data));
+    const contactsData = extracted.map((data) => ({
+      email: data.email || "",
+      firstName: data.firstName,
+      lastName: data.lastName,
+    })).filter(c => c.email);
 
-    // Check for duplicates
-    const existingEmails = new Set(contacts.map((c) => c.email.toLowerCase()));
-    const duplicateEmails = newContacts.filter((c) => existingEmails.has(c.email.toLowerCase()));
+    try {
+      setIsSubmitting(true);
+      const result = await bulkImportContacts(accessToken, {
+        contacts: contactsData,
+        dedupeStrategy: dedupeStrategy,
+      });
 
-    if (!autoDedupe && duplicateEmails.length > 0) {
-      toast.error(`Import rejected: ${duplicateEmails.length} duplicate email(s) found. Enable auto-deduplicate to keep the most recent.`);
+      setPasteText("");
+      await fetchContacts();
+      await fetchStats();
+
+      toast.success(`Extracted ${result.imported} contacts`);
+    } catch (error) {
+      console.error("Failed to import contacts:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to import contacts");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [accessToken, pasteText, dedupeStrategy, fetchContacts, fetchStats]);
+
+  const handleAddManual = useCallback(async () => {
+    if (!accessToken) {
+      toast.error("Please log in to add contacts");
       return;
     }
 
-    let processedContacts = newContacts;
-    if (autoDedupe) {
-      processedContacts = deduplicateContacts([...contacts, ...newContacts], dedupeStrategy);
-    } else {
-      processedContacts = [...contacts, ...newContacts];
-    }
-
-    setContacts(processedContacts);
-    setPasteText("");
-    toast.success(`Extracted ${newContacts.length} contacts`);
-  }, [pasteText, contacts, autoDedupe, dedupeStrategy]);
-
-  const handleAddManual = useCallback(() => {
     if (!manualEmail.trim()) {
       setManualEmailError("Email is required");
       return;
@@ -530,95 +614,145 @@ export default function GlobalContactsPage() {
       return;
     }
 
-    // Check for duplicate
-    const emailLower = manualEmail.toLowerCase().trim();
-    const existingContact = contacts.find((c) => c.email.toLowerCase() === emailLower);
+    try {
+      setIsSubmitting(true);
+      await createContact(accessToken, {
+        email: manualEmail,
+        firstName: manualFirstName || undefined,
+        lastName: manualLastName || undefined,
+        company: manualCompany || undefined,
+        role: manualRole || undefined,
+      });
 
-    if (!autoDedupe && existingContact) {
-      toast.error(`Duplicate email: ${manualEmail} already exists. Enable auto-deduplicate to replace it.`);
-      return;
+      // Clear form
+      setManualEmail("");
+      setManualFirstName("");
+      setManualLastName("");
+      setManualCompany("");
+      setManualRole("");
+      setManualEmailError("");
+
+      // Refresh contacts list
+      await fetchContacts();
+      await fetchStats();
+
+      toast.success("Contact added successfully");
+    } catch (error) {
+      console.error("Failed to add contact:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to add contact");
+    } finally {
+      setIsSubmitting(false);
     }
-
-    const newContact = createContact({
-      email: manualEmail,
-      firstName: manualFirstName,
-      lastName: manualLastName,
-      company: manualCompany,
-      role: manualRole,
-      tags: [],
-    });
-
-    let processedContacts: Contact[];
-    if (autoDedupe && existingContact) {
-      // Replace existing with new (keep latest)
-      processedContacts = contacts.map((c) =>
-        c.email.toLowerCase() === emailLower ? newContact : c
-      );
-    } else {
-      processedContacts = [newContact, ...contacts];
-    }
-
-    setContacts(processedContacts);
-
-    // Clear form
-    setManualEmail("");
-    setManualFirstName("");
-    setManualLastName("");
-    setManualCompany("");
-    setManualRole("");
-    setManualEmailError("");
-
-    toast.success(existingContact && autoDedupe ? "Contact updated (replaced duplicate)" : "Contact added successfully");
-  }, [manualEmail, manualFirstName, manualLastName, manualCompany, manualRole, contacts, autoDedupe, dedupeStrategy]);
+  }, [accessToken, manualEmail, manualFirstName, manualLastName, manualCompany, manualRole, fetchContacts, fetchStats]);
 
   const handleUpdateContact = useCallback(
-    (id: string, field: keyof Contact, value: string) => {
+    async (id: string, field: keyof Contact, value: string) => {
+      if (!accessToken) return;
+
+      // Optimistically update local state
       setContacts((prev) =>
         prev.map((contact) => {
           if (contact.id !== id) return contact;
-
-          const updated = { ...contact, [field]: value, updatedAt: new Date() };
-          const errors = validateContact(updated);
-          updated.status = errors.length > 0 ? "invalid" : "valid";
-          updated.validationErrors = errors;
-
-          return updated;
+          return { ...contact, [field]: value };
         })
       );
+
+      try {
+        await updateContact(accessToken, id, { [field]: value });
+      } catch (error) {
+        console.error("Failed to update contact:", error);
+        toast.error(error instanceof Error ? error.message : "Failed to update contact");
+        // Refresh to revert on error
+        fetchContacts();
+      }
     },
-    []
+    [accessToken, fetchContacts]
   );
 
-  const handleDeleteSelected = useCallback(() => {
-    setContacts((prev) => prev.filter((c) => !selectedIds.has(c.id)));
-    setSelectedIds(new Set());
-    toast.success(`Deleted ${selectedIds.size} contacts`);
-  }, [selectedIds]);
+  const handleDeleteSelected = useCallback(async () => {
+    if (!accessToken) {
+      toast.error("Please log in to delete contacts");
+      return;
+    }
+
+    const idsToDelete = Array.from(selectedIds);
+    if (idsToDelete.length === 0) return;
+
+    try {
+      setIsSubmitting(true);
+      await deleteContacts(accessToken, idsToDelete);
+      setSelectedIds(new Set());
+      await fetchContacts();
+      await fetchStats();
+      toast.success(`Deleted ${idsToDelete.length} contacts`);
+    } catch (error) {
+      console.error("Failed to delete contacts:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to delete contacts");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [accessToken, selectedIds, fetchContacts, fetchStats]);
 
   const handleExport = useCallback(() => {
-    const csv = contactsToCSV(contacts);
+    // Convert API contacts to local format for CSV export
+    const localContacts = contacts.map((c) => ({
+      ...c,
+      firstName: c.firstName ?? "",
+      lastName: c.lastName ?? "",
+      company: c.company ?? "",
+      role: c.role ?? "",
+    }));
+    const csv = contactsToCSV(localContacts as unknown as LocalContact[]);
     downloadFile(csv, "contacts.csv", "text/csv");
     toast.success("Contacts exported successfully");
   }, [contacts]);
 
   const handleExportSelected = useCallback(() => {
     const selected = contacts.filter((c) => selectedIds.has(c.id));
-    const csv = contactsToCSV(selected);
+    // Convert API contacts to local format for CSV export
+    const localContacts = selected.map((c) => ({
+      ...c,
+      firstName: c.firstName ?? "",
+      lastName: c.lastName ?? "",
+      company: c.company ?? "",
+      role: c.role ?? "",
+    }));
+    const csv = contactsToCSV(localContacts as unknown as LocalContact[]);
     downloadFile(csv, "selected-contacts.csv", "text/csv");
     toast.success(`Exported ${selected.length} contacts`);
   }, [contacts, selectedIds]);
 
-  const handleSaveList = useCallback(() => {
+  const handleSaveList = useCallback(async () => {
+    if (!accessToken) {
+      toast.error("Please log in to save lists");
+      return;
+    }
+
     if (!listName.trim()) {
       toast.error("Please enter a list name");
       return;
     }
 
-    // Mock save - in real app this would call an API
-    toast.success(`Saved "${listName}" with ${contacts.length} contacts`);
-    setShowSaveModal(false);
-    setListName("");
-  }, [listName, contacts]);
+    try {
+      setIsSubmitting(true);
+      const contactIds = contacts.map((c) => c.id);
+      await createContactList(accessToken, {
+        name: listName,
+        description: listDescription || undefined,
+        contactIds,
+      });
+
+      toast.success(`Saved "${listName}" with ${contacts.length} contacts`);
+      setShowSaveModal(false);
+      setListName("");
+      setListDescription("");
+    } catch (error) {
+      console.error("Failed to save list:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to save list");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [accessToken, listName, listDescription, contacts]);
 
   const handleClearAll = useCallback(() => {
     setContacts([]);
@@ -706,7 +840,7 @@ export default function GlobalContactsPage() {
                       <CardDescription>Add contacts via file upload, paste, or manual entry</CardDescription>
                     </div>
                     <div className="flex items-center gap-4">
-                      <div className="flex items-center gap-2">
+                      {/*<div className="flex items-center gap-2">
                         <Switch
                           id="auto-dedupe"
                           checked={autoDedupe}
@@ -715,7 +849,7 @@ export default function GlobalContactsPage() {
                         <Label htmlFor="auto-dedupe" className="text-sm">
                           Auto Deduplicate
                         </Label>
-                      </div>
+                      </div>*/}
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon-sm">
@@ -1009,19 +1143,19 @@ export default function GlobalContactsPage() {
                               </TableCell>
                               <TableCell>
                                 <EditableCell
-                                  value={contact.firstName}
+                                  value={contact.firstName ?? ""}
                                   onSave={(v) => handleUpdateContact(contact.id, "firstName", v)}
                                 />
                               </TableCell>
                               <TableCell>
                                 <EditableCell
-                                  value={contact.lastName}
+                                  value={contact.lastName ?? ""}
                                   onSave={(v) => handleUpdateContact(contact.id, "lastName", v)}
                                 />
                               </TableCell>
                               <TableCell>
                                 <EditableCell
-                                  value={contact.company}
+                                  value={contact.company ?? ""}
                                   onSave={(v) => handleUpdateContact(contact.id, "company", v)}
                                 />
                               </TableCell>

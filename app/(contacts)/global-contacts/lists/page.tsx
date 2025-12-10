@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import {
   Users,
@@ -14,12 +14,13 @@ import {
   Calendar,
   Mail,
   FolderOpen,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -55,72 +56,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
-
-// Mock contact list type
-interface ContactList {
-  id: string;
-  name: string;
-  description: string;
-  contactCount: number;
-  validCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-  tags: string[];
-}
-
-// Mock data - represents lists saved from Global Contacts page
-const mockLists: ContactList[] = [
-  {
-    id: "list_1",
-    name: "Q4 Product Launch Leads",
-    description: "Enterprise prospects for Q4 product launch campaign",
-    contactCount: 2847,
-    validCount: 2756,
-    createdAt: new Date("2024-11-15"),
-    updatedAt: new Date("2024-12-02"),
-    tags: ["enterprise", "product-launch"],
-  },
-  {
-    id: "list_2",
-    name: "Newsletter Subscribers",
-    description: "Active newsletter subscribers from website signups",
-    contactCount: 12534,
-    validCount: 12089,
-    createdAt: new Date("2024-08-20"),
-    updatedAt: new Date("2024-12-01"),
-    tags: ["newsletter", "organic"],
-  },
-  {
-    id: "list_3",
-    name: "Webinar Attendees - Nov 2024",
-    description: "Attendees from the November product demo webinar",
-    contactCount: 456,
-    validCount: 442,
-    createdAt: new Date("2024-11-28"),
-    updatedAt: new Date("2024-11-28"),
-    tags: ["webinar", "warm-leads"],
-  },
-  {
-    id: "list_4",
-    name: "Partner Referrals",
-    description: "Leads from partner referral program",
-    contactCount: 1203,
-    validCount: 1156,
-    createdAt: new Date("2024-09-10"),
-    updatedAt: new Date("2024-11-25"),
-    tags: ["partners", "referral"],
-  },
-  {
-    id: "list_5",
-    name: "Free Trial Signups",
-    description: "Users who signed up for free trial in last 30 days",
-    contactCount: 3421,
-    validCount: 3298,
-    createdAt: new Date("2024-11-01"),
-    updatedAt: new Date("2024-12-05"),
-    tags: ["trial", "conversion"],
-  },
-];
+import { useAccessToken } from "@/lib/auth-store";
+import {
+  ContactList,
+  getContactLists,
+  updateContactList,
+  deleteContactList,
+  exportContactList,
+} from "@/lib/contacts-api";
 
 function EmptyState() {
   return (
@@ -142,7 +85,8 @@ function EmptyState() {
   );
 }
 
-function formatDate(date: Date): string {
+function formatDate(dateString: string): string {
+  const date = new Date(dateString);
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -155,19 +99,46 @@ function formatNumber(num: number): string {
 }
 
 export default function ContactListsPage() {
-  const [lists, setLists] = useState<ContactList[]>(mockLists);
+  const accessToken = useAccessToken();
+
+  // State
+  const [lists, setLists] = useState<ContactList[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [deleteListId, setDeleteListId] = useState<string | null>(null);
   const [editList, setEditList] = useState<ContactList | null>(null);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
 
+  // Fetch lists from API
+  const fetchLists = useCallback(async () => {
+    if (!accessToken) return;
+
+    try {
+      setIsLoading(true);
+      const response = await getContactLists(accessToken, searchQuery || undefined);
+      setLists(response.lists);
+    } catch (error) {
+      console.error("Failed to fetch contact lists:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to load contact lists");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [accessToken, searchQuery]);
+
+  // Load lists on mount and when search changes
+  useEffect(() => {
+    fetchLists();
+  }, [fetchLists]);
+
+  // Computed values
   const filteredLists = lists.filter((list) => {
     if (!searchQuery) return true;
     const query = searchQuery.toLowerCase();
     return (
       list.name.toLowerCase().includes(query) ||
-      list.description.toLowerCase().includes(query) ||
+      (list.description?.toLowerCase().includes(query) ?? false) ||
       list.tags.some((tag) => tag.toLowerCase().includes(query))
     );
   });
@@ -175,40 +146,64 @@ export default function ContactListsPage() {
   const totalContacts = lists.reduce((sum, list) => sum + list.contactCount, 0);
   const totalValid = lists.reduce((sum, list) => sum + list.validCount, 0);
 
-  const handleDelete = () => {
-    if (deleteListId) {
-      setLists((prev) => prev.filter((l) => l.id !== deleteListId));
-      toast.success("Contact list deleted");
+  // Handlers
+  const handleDelete = async () => {
+    if (!accessToken || !deleteListId) return;
+
+    try {
+      setIsSubmitting(true);
+      await deleteContactList(accessToken, deleteListId);
       setDeleteListId(null);
+      await fetchLists();
+      toast.success("Contact list deleted");
+    } catch (error) {
+      console.error("Failed to delete list:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to delete list");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleEdit = () => {
-    if (editList && editName.trim()) {
-      setLists((prev) =>
-        prev.map((l) =>
-          l.id === editList.id
-            ? { ...l, name: editName, description: editDescription, updatedAt: new Date() }
-            : l
-        )
-      );
-      toast.success("Contact list updated");
+  const handleEdit = async () => {
+    if (!accessToken || !editList || !editName.trim()) return;
+
+    try {
+      setIsSubmitting(true);
+      await updateContactList(accessToken, editList.id, {
+        name: editName,
+        description: editDescription || undefined,
+      });
       setEditList(null);
+      await fetchLists();
+      toast.success("Contact list updated");
+    } catch (error) {
+      console.error("Failed to update list:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to update list");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleExport = (list: ContactList) => {
-    // Mock export
-    toast.success(`Exporting ${list.name}...`);
-    setTimeout(() => {
+  const handleExport = async (list: ContactList) => {
+    if (!accessToken) {
+      toast.error("Please log in to export lists");
+      return;
+    }
+
+    try {
+      toast.info(`Exporting ${list.name}...`);
+      await exportContactList(accessToken, list.id, list.name);
       toast.success(`${list.name} exported successfully`);
-    }, 1000);
+    } catch (error) {
+      console.error("Failed to export list:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to export list");
+    }
   };
 
   const openEditDialog = (list: ContactList) => {
     setEditList(list);
     setEditName(list.name);
-    setEditDescription(list.description);
+    setEditDescription(list.description || "");
   };
 
   return (
@@ -289,7 +284,11 @@ export default function ContactListsPage() {
             </div>
           </CardHeader>
           <CardContent>
-            {lists.length === 0 ? (
+            {isLoading ? (
+              <div className="flex items-center justify-center py-16">
+                <Loader2 className="size-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : lists.length === 0 ? (
               <EmptyState />
             ) : filteredLists.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
@@ -417,7 +416,10 @@ export default function ContactListsPage() {
             <Button variant="outline" onClick={() => setEditList(null)}>
               Cancel
             </Button>
-            <Button onClick={handleEdit}>Save Changes</Button>
+            <Button onClick={handleEdit} disabled={isSubmitting}>
+              {isSubmitting && <Loader2 className="size-4 mr-2 animate-spin" />}
+              Save Changes
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -433,7 +435,10 @@ export default function ContactListsPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete}>Delete</AlertDialogAction>
+            <AlertDialogAction onClick={handleDelete} disabled={isSubmitting}>
+              {isSubmitting && <Loader2 className="size-4 mr-2 animate-spin" />}
+              Delete
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
