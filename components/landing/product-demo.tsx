@@ -74,8 +74,8 @@ export function ProductDemo() {
               </div>
               <div className="flex-1 bg-muted rounded-md px-3 py-1.5 text-xs text-muted-foreground text-center">
                 {activeTab === "editor"
-                  ? "app.emailconfig.io/campaigns/email-editor"
-                  : "app.emailconfig.io/contacts"}
+                  ? `${process.env.NEXT_PUBLIC_WEBSITE_BASE_URL}/campaigns/email-editor`
+                  : `${process.env.NEXT_PUBLIC_WEBSITE_BASE_URL}/global-contacts`}
               </div>
             </div>
 
@@ -143,9 +143,8 @@ export function ProductDemo() {
                         ].map((list) => (
                           <div
                             key={list.name}
-                            className={`flex items-center justify-between p-2 rounded-lg text-sm ${
-                              list.active ? "bg-primary/10 text-primary" : "hover:bg-muted"
-                            }`}
+                            className={`flex items-center justify-between p-2 rounded-lg text-sm ${list.active ? "bg-primary/10 text-primary" : "hover:bg-muted"
+                              }`}
                           >
                             <span className="truncate">{list.name}</span>
                             <span className="text-xs text-muted-foreground">{list.count}</span>

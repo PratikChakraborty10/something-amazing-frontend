@@ -5,6 +5,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "motion/react";
 import { ArrowRight, Play, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DottedGlowBackground } from "../ui/dotted-glow-background";
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -38,18 +39,27 @@ export function HeroSection() {
   return (
     <section className="relative min-h-screen flex items-center justify-center pt-24 pb-16 px-4 overflow-hidden">
       
-      {/* Gradient overlays */}
-      <div className="absolute inset-0 -z-10">
-        <div className="absolute inset-0 bg-gradient-to-b from-background/80 via-transparent to-transparent" />
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-primary/10 rounded-full blur-3xl opacity-50" />
-        <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
-      </div>
+      
+      <DottedGlowBackground
+        className="pointer-events-none mask-radial-to-90% mask-radial-at-center opacity-20 dark:opacity-100"
+        opacity={1}
+        gap={10}
+        radius={1.6}
+        colorLightVar="--color-neutral-500"
+        glowColorLightVar="--color-neutral-600"
+        colorDarkVar="--color-neutral-500"
+        glowColorDarkVar="--color-sky-800"
+        backgroundOpacity={0}
+        speedMin={0.3}
+        speedMax={1.6}
+        speedScale={1}
+      />
 
       <motion.div
         variants={containerVariants}
         initial="hidden"
         animate="visible"
-        className="max-w-4xl mx-auto text-center"
+        className="max-w-4xl mx-auto text-center z-50"
       >
         {/* Badge */}
         <motion.div variants={itemVariants} className="mb-6">
@@ -85,7 +95,7 @@ export function HeroSection() {
           variants={itemVariants}
           className="flex flex-col sm:flex-row items-center justify-center gap-4"
         >
-          <Button size="lg" asChild className="rounded-full px-8 h-12 text-base shadow-lg shadow-primary/25">
+          <Button size="lg" asChild className="rounded-full px-8 h-12 text-base shadow-lg shadow-primary/25 z-20">
             <Link href="/signup">
               Start Free Trial
               <ArrowRight className="ml-2 size-4" />
@@ -95,7 +105,7 @@ export function HeroSection() {
             variant="outline"
             size="lg"
             onClick={() => setIsVideoOpen(true)}
-            className="rounded-full px-8 h-12 text-base"
+            className="rounded-full px-8 h-12 text-base z-20 cursor-pointer"
           >
             <Play className="mr-2 size-4" />
             Watch Demo
