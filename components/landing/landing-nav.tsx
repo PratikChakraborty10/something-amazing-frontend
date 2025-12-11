@@ -6,6 +6,7 @@ import { Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModeToggle } from "@/components/mode-toggle";
 import { useState } from "react";
+import { useCalCom } from "@/hooks/use-calcom";
 import {
   Navbar,
   NavBody,
@@ -24,6 +25,7 @@ const navLinks = [
 
 export function LandingNav() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { openCalPopup } = useCalCom();
 
   return (
     <motion.header
@@ -58,8 +60,8 @@ export function LandingNav() {
               <Button variant="ghost" size="sm" asChild>
                 <Link href="/login">Log in</Link>
               </Button>
-              <Button size="sm" asChild className="rounded-full px-5">
-                <Link href="/signup">Start Free Trial</Link>
+              <Button size="sm" className="rounded-full px-5 cursor-pointer" onClick={openCalPopup}>
+                Let&apos;s talk
               </Button>
             </div>
           </div>
@@ -114,8 +116,8 @@ export function LandingNav() {
               <Button variant="ghost" size="sm" asChild className="justify-start">
                 <Link href="/login">Log in</Link>
               </Button>
-              <Button size="sm" asChild>
-                <Link href="/signup">Start Free Trial</Link>
+              <Button size="sm" onClick={() => { setMobileMenuOpen(false); openCalPopup(); }}>
+                Let&apos;s talk
               </Button>
             </div>
           </MobileNavMenu>

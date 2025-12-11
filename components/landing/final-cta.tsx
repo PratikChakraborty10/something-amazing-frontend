@@ -6,10 +6,13 @@ import { useRef } from "react";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
+import { useCalCom } from "@/hooks/use-calcom";
 
 export function FinalCta() {
   const ref = useRef(null);
   const isInView = useInView(ref, { once: true, margin: "-100px" });
+  const { openCalPopup } = useCalCom();
+  
 
   return (
     <section className="py-24 px-4" ref={ref}>
@@ -47,10 +50,10 @@ export function FinalCta() {
             </Button>
             <Button
               size="lg"
-              className="border-2 border-white/30 bg-transparent text-white hover:bg-white/10 hover:border-white/50 rounded-full px-8 h-12 text-base"
-              asChild
+              onClick={openCalPopup}
+              className="border-2 border-white/30 bg-transparent text-white hover:bg-white/10 hover:border-white/50 rounded-full px-8 h-12 text-base cursor-pointer"
             >
-              <a href="mailto:sales@emailconfig.io">Contact Sales</a>
+              Contact Sales
             </Button>
           </div>
         </div>
