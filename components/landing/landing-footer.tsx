@@ -5,28 +5,28 @@ import { Mail, Github, Twitter, Linkedin } from "lucide-react";
 
 const footerLinks = {
   Product: [
-    { label: "Features", href: "#features" },
-    { label: "Pricing", href: "#pricing" },
-    { label: "Integrations", href: "#integrations" },
-    { label: "Changelog", href: "#" },
+    { label: "Features", href: "/#features", isExternal: false },
+    { label: "Pricing", href: "/#pricing", isExternal: false },
+    { label: "Integrations", href: "/#integrations", isExternal: false },
+    { label: "Changelog", href: "/blog", isExternal: false },
   ],
   Company: [
-    { label: "About", href: "#" },
-    { label: "Blog", href: "#" },
-    { label: "Careers", href: "#" },
-    { label: "Contact", href: "#" },
+    { label: "About", href: "/about", isExternal: false },
+    { label: "Blog", href: "/blog", isExternal: false },
+    { label: "Careers", href: "/careers", isExternal: false },
+    { label: "Contact", href: "/contact", isExternal: false },
   ],
   Resources: [
-    { label: "Documentation", href: "#" },
-    { label: "API Reference", href: "#" },
-    { label: "Help Center", href: "#" },
-    { label: "Status", href: "#" },
+    { label: "Documentation", href: "/documentation", isExternal: false },
+    { label: "API Reference", href: "/api-reference", isExternal: false },
+    { label: "Help Center", href: "/help-center", isExternal: false },
+    { label: "Status", href: "/status", isExternal: false },
   ],
   Legal: [
-    { label: "Privacy Policy", href: "#" },
-    { label: "Terms of Service", href: "#" },
-    { label: "Cookie Policy", href: "#" },
-    { label: "GDPR", href: "#" },
+    { label: "Privacy Policy", href: "/privacy-policy", isExternal: false },
+    { label: "Terms of Service", href: "/terms", isExternal: false },
+    { label: "Cookie Policy", href: "/cookie-policy", isExternal: false },
+    { label: "GDPR", href: "/gdpr", isExternal: false },
   ],
 };
 
@@ -79,12 +79,21 @@ export function LandingFooter() {
               <ul className="space-y-3">
                 {links.map((link) => (
                   <li key={link.label}>
-                    <a
-                      href={link.href}
-                      className="text-sm text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      {link.label}
-                    </a>
+                    {link.href.startsWith("#") ? (
+                      <a
+                        href={link.href}
+                        className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        {link.label}
+                      </a>
+                    ) : (
+                      <Link
+                        href={link.href}
+                        className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        {link.label}
+                      </Link>
+                    )}
                   </li>
                 ))}
               </ul>
