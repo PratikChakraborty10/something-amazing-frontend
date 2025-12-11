@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useMemo, useEffect } from "react";
+import { useState, useCallback, useRef, useMemo } from "react";
 import Link from "next/link";
 import {
   Upload,
@@ -9,7 +9,6 @@ import {
   FileText,
   Download,
   Trash2,
-  Edit3,
   Search,
   Check,
   X,
@@ -23,6 +22,7 @@ import {
   Filter,
   Settings2,
   HelpCircle,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -30,10 +30,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table,
@@ -86,12 +91,10 @@ import {
   Contact as LocalContact,
   ParsedColumn,
   CanonicalField,
-  DedupeStrategy as LocalDedupeStrategy,
   parseCSV,
   extractEmailsFromText,
   suggestColumnMapping,
   createContact as createLocalContact,
-  validateContact,
   deduplicateContacts,
   contactsToCSV,
   downloadFile,
@@ -102,30 +105,28 @@ import {
 } from "@/lib/contact-utils";
 import { useAccessToken } from "@/lib/auth-store";
 import {
-  Contact,
-  ContactStats,
   DedupeStrategy,
-  createContact,
   bulkImportContacts,
-  getContacts,
-  getContactStats as fetchContactStats,
-  updateContact,
-  deleteContact,
-  deleteContacts,
   createContactList,
 } from "@/lib/contacts-api";
 
 // Empty state component
-function EmptyState({ onUpload, onAddManual }: { onUpload: () => void; onAddManual: () => void }) {
+function EmptyState({
+  onUpload,
+  onAddManual,
+}: {
+  onUpload: () => void;
+  onAddManual: () => void;
+}) {
   return (
     <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
       <div className="rounded-full bg-muted p-6 mb-6">
         <FileText className="size-12 text-muted-foreground" />
       </div>
-      <h3 className="text-lg font-semibold mb-2">No contacts yet</h3>
+      <h3 className="text-lg font-semibold mb-2">No contacts imported yet</h3>
       <p className="text-muted-foreground max-w-md mb-6">
-        Start building your contact database by uploading a CSV file or adding contacts manually.
-        You can import thousands of contacts at once.
+        Import contacts from a CSV file, paste email addresses, or add them
+        manually. Your imported contacts will appear here before saving.
       </p>
       <div className="flex gap-3">
         <Button onClick={onUpload}>
@@ -139,8 +140,9 @@ function EmptyState({ onUpload, onAddManual }: { onUpload: () => void; onAddManu
       </div>
       <div className="mt-8 p-4 bg-muted/50 rounded-lg max-w-md">
         <p className="text-sm text-muted-foreground">
-          <strong>Tip:</strong> Required columns: Email. Optional: First Name, Last Name, Company, Role.
-          Use headers in your CSV for automatic column detection.
+          <strong>Tip:</strong> Required columns: Email. Optional: First Name,
+          Last Name, Company, Role. Use headers in your CSV for automatic column
+          detection.
         </p>
       </div>
     </div>
@@ -148,10 +150,19 @@ function EmptyState({ onUpload, onAddManual }: { onUpload: () => void; onAddManu
 }
 
 // Status badge component
-function StatusBadge({ status, errors }: { status: LocalContact["status"]; errors?: string[] }) {
+function StatusBadge({
+  status,
+  errors,
+}: {
+  status: LocalContact["status"];
+  errors?: string[];
+}) {
   if (status === "valid") {
     return (
-      <Badge variant="secondary" className="bg-primary/10 text-primary hover:bg-primary/20">
+      <Badge
+        variant="secondary"
+        className="bg-primary/10 text-primary hover:bg-primary/20"
+      >
         <CheckCircle2 className="size-3 mr-1" />
         Valid
       </Badge>
@@ -160,7 +171,10 @@ function StatusBadge({ status, errors }: { status: LocalContact["status"]; error
 
   if (status === "duplicate") {
     return (
-      <Badge variant="secondary" className="bg-secondary text-secondary-foreground">
+      <Badge
+        variant="secondary"
+        className="bg-secondary text-secondary-foreground"
+      >
         <Copy className="size-3 mr-1" />
         Duplicate
       </Badge>
@@ -203,7 +217,9 @@ function ColumnMappingRow({
       <ChevronRight className="size-4 text-muted-foreground shrink-0" />
       <Select
         value={column.mappedTo || "ignore"}
-        onValueChange={(v) => onMappingChange(v === "ignore" ? null : (v as CanonicalField))}
+        onValueChange={(v) =>
+          onMappingChange(v === "ignore" ? null : (v as CanonicalField))
+        }
       >
         <SelectTrigger className="w-40">
           <SelectValue />
@@ -284,21 +300,20 @@ export default function GlobalContactsPage() {
   // Auth
   const accessToken = useAccessToken();
 
-  // State
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  // Session-local contacts (not fetched from API)
+  const [sessionContacts, setSessionContacts] = useState<LocalContact[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "valid" | "invalid" | "duplicate">("all");
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | "valid" | "invalid" | "duplicate"
+  >("all");
   const [domainFilter, setDomainFilter] = useState<string>("all");
   const [autoDedupe, setAutoDedupe] = useState(true);
-  const [dedupeStrategy, setDedupeStrategy] = useState<DedupeStrategy>("keepLast");
+  const [dedupeStrategy, setDedupeStrategy] =
+    useState<DedupeStrategy>("keepLast");
 
   // Loading states
-  const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Stats from API
-  const [apiStats, setApiStats] = useState<ContactStats | null>(null);
 
   // Import state
   const [parsedColumns, setParsedColumns] = useState<ParsedColumn[]>([]);
@@ -322,74 +337,15 @@ export default function GlobalContactsPage() {
   const [listDescription, setListDescription] = useState("");
   const [activeTab, setActiveTab] = useState("upload");
 
-  // Pagination
-  const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalContacts, setTotalContacts] = useState(0);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch contacts from API
-  const fetchContacts = useCallback(async () => {
-    if (!accessToken) return;
-
-    try {
-      setIsLoading(true);
-      const response = await getContacts(accessToken, {
-        page: currentPage,
-        limit: 50,
-        search: searchQuery || undefined,
-        status: statusFilter !== "all" ? statusFilter : undefined,
-        domain: domainFilter !== "all" ? domainFilter : undefined,
-      });
-      setContacts(response.contacts);
-      setTotalPages(response.pagination.totalPages);
-      setTotalContacts(response.pagination.total);
-    } catch (error) {
-      console.error("Failed to fetch contacts:", error);
-      toast.error(error instanceof Error ? error.message : "Failed to load contacts");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [accessToken, currentPage, searchQuery, statusFilter, domainFilter]);
-
-  // Fetch stats from API
-  const fetchStats = useCallback(async () => {
-    if (!accessToken) return;
-
-    try {
-      const stats = await fetchContactStats(accessToken);
-      setApiStats(stats);
-    } catch (error) {
-      console.error("Failed to fetch stats:", error);
-    }
-  }, [accessToken]);
-
-  // Load contacts and stats on mount and when filters change
-  useEffect(() => {
-    fetchContacts();
-  }, [fetchContacts]);
-
-  useEffect(() => {
-    fetchStats();
-  }, [fetchStats]);
-
-  // Computed values - use API stats if available, otherwise compute locally
+  // Computed values - use local contact stats
   const stats = useMemo(() => {
-    if (apiStats) {
-      return {
-        total: apiStats.total,
-        valid: apiStats.valid,
-        invalid: apiStats.invalid,
-        duplicate: apiStats.duplicate,
-        topDomains: apiStats.topDomains,
-      };
-    }
-    return getContactStats(contacts as unknown as LocalContact[]);
-  }, [apiStats, contacts]);
+    return getContactStats(sessionContacts);
+  }, [sessionContacts]);
 
   const filteredContacts = useMemo(() => {
-    return contacts.filter((contact) => {
+    return sessionContacts.filter((contact) => {
       // Search filter
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
@@ -414,47 +370,44 @@ export default function GlobalContactsPage() {
 
       return true;
     });
-  }, [contacts, searchQuery, statusFilter, domainFilter]);
+  }, [sessionContacts, searchQuery, statusFilter, domainFilter]);
 
   const uniqueDomains = useMemo(() => {
     const domains = new Set<string>();
-    contacts.forEach((c) => {
+    sessionContacts.forEach((c) => {
       const domain = extractDomain(c.email);
       if (domain) domains.add(domain);
     });
     return Array.from(domains).sort();
-  }, [contacts]);
+  }, [sessionContacts]);
 
   // Handlers
-  const handleFileSelect = useCallback(
-    (file: File) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const text = e.target?.result as string;
-        const rows = parseCSV(text);
+  const handleFileSelect = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      const rows = parseCSV(text);
 
-        if (rows.length < 2) {
-          toast.error("File must contain at least a header row and one data row");
-          return;
-        }
+      if (rows.length < 2) {
+        toast.error("File must contain at least a header row and one data row");
+        return;
+      }
 
-        const headers = rows[0];
-        const dataRows = rows.slice(1);
+      const headers = rows[0];
+      const dataRows = rows.slice(1);
 
-        const columns: ParsedColumn[] = headers.map((header, index) => ({
-          originalName: header,
-          mappedTo: suggestColumnMapping(header),
-          sampleValues: dataRows.slice(0, 3).map((row) => row[index] || ""),
-        }));
+      const columns: ParsedColumn[] = headers.map((header, index) => ({
+        originalName: header,
+        mappedTo: suggestColumnMapping(header),
+        sampleValues: dataRows.slice(0, 3).map((row) => row[index] || ""),
+      }));
 
-        setParsedColumns(columns);
-        setParsedRows(dataRows);
-        setShowMappingModal(true);
-      };
-      reader.readAsText(file);
-    },
-    []
-  );
+      setParsedColumns(columns);
+      setParsedRows(dataRows);
+      setShowMappingModal(true);
+    };
+    reader.readAsText(file);
+  }, []);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -462,7 +415,12 @@ export default function GlobalContactsPage() {
       setDragOver(false);
 
       const file = e.dataTransfer.files[0];
-      if (file && (file.name.endsWith(".csv") || file.name.endsWith(".xlsx") || file.name.endsWith(".xls"))) {
+      if (
+        file &&
+        (file.name.endsWith(".csv") ||
+          file.name.endsWith(".xlsx") ||
+          file.name.endsWith(".xls"))
+      ) {
         handleFileSelect(file);
       } else {
         toast.error("Please upload a CSV or Excel file");
@@ -481,85 +439,80 @@ export default function GlobalContactsPage() {
     [handleFileSelect]
   );
 
-  const confirmMapping = useCallback(async () => {
-    if (!accessToken) {
-      toast.error("Please log in to import contacts");
-      return;
-    }
-
+  // Confirm CSV mapping - adds contacts to session state
+  const confirmMapping = useCallback(() => {
     // Find email column
-    const emailColIndex = parsedColumns.findIndex((c) => c.mappedTo === "email");
+    const emailColIndex = parsedColumns.findIndex(
+      (c) => c.mappedTo === "email"
+    );
     if (emailColIndex === -1) {
       toast.error("Please map at least one column to Email");
       return;
     }
 
-    // Create contacts data from rows
-    const contactsData = parsedRows.map((row) => {
-      const data: { email: string; firstName?: string; lastName?: string; company?: string; role?: string; tags?: string[] } = {
-        email: "",
-      };
+    // Create contacts from rows
+    const newContacts: LocalContact[] = parsedRows
+      .map((row) => {
+        const data: Partial<LocalContact> = {};
 
-      parsedColumns.forEach((col, index) => {
-        if (!col.mappedTo || col.mappedTo === "ignore") return;
+        parsedColumns.forEach((col, index) => {
+          if (!col.mappedTo || col.mappedTo === "ignore") return;
 
-        const value = row[index] || "";
+          const value = row[index] || "";
 
-        switch (col.mappedTo) {
-          case "email":
-            data.email = value;
-            break;
-          case "firstName":
-            data.firstName = value;
-            break;
-          case "lastName":
-            data.lastName = value;
-            break;
-          case "company":
-            data.company = value;
-            break;
-          case "role":
-            data.role = value;
-            break;
-          case "tags":
-            data.tags = value.split(/[,;]/).map((t) => t.trim()).filter(Boolean);
-            break;
-        }
-      });
+          switch (col.mappedTo) {
+            case "email":
+              data.email = value;
+              break;
+            case "firstName":
+              data.firstName = value;
+              break;
+            case "lastName":
+              data.lastName = value;
+              break;
+            case "company":
+              data.company = value;
+              break;
+            case "role":
+              data.role = value;
+              break;
+            case "tags":
+              data.tags = value
+                .split(/[,;]/)
+                .map((t) => t.trim())
+                .filter(Boolean);
+              break;
+          }
+        });
 
-      return data;
-    }).filter(c => c.email); // Filter out empty emails
+        if (!data.email) return null;
 
-    try {
-      setIsSubmitting(true);
-      const result = await bulkImportContacts(accessToken, {
-        contacts: contactsData,
-        dedupeStrategy: dedupeStrategy,
-      });
+        // Create contact locally (validation is handled internally)
+        return createLocalContact(data);
+      })
+      .filter((c): c is LocalContact => c !== null);
 
-      setShowMappingModal(false);
-      setParsedColumns([]);
-      setParsedRows([]);
+    // Add to session contacts with optional deduplication
+    setSessionContacts((prev) => {
+      const combined = [...prev, ...newContacts];
+      if (autoDedupe) {
+        return deduplicateContacts(
+          combined,
+          dedupeStrategy as "keepFirst" | "keepLast" | "merge"
+        );
+      }
+      return combined;
+    });
 
-      // Refresh contacts list
-      await fetchContacts();
-      await fetchStats();
+    setShowMappingModal(false);
+    setParsedColumns([]);
+    setParsedRows([]);
 
-      toast.success(`Imported ${result.imported} contacts (${result.duplicates} duplicates handled, ${result.skipped} skipped)`);
-    } catch (error) {
-      console.error("Failed to import contacts:", error);
-      toast.error(error instanceof Error ? error.message : "Failed to import contacts");
-    } finally {
-      setIsSubmitting(false);
-    }
-  }, [accessToken, parsedColumns, parsedRows, dedupeStrategy, fetchContacts, fetchStats]);
+    toast.success(`Added ${newContacts.length} contacts to import queue`);
+  }, [parsedColumns, parsedRows, autoDedupe, dedupeStrategy]);
 
-  const handleParsePaste = useCallback(async () => {
-    if (!accessToken) {
-      toast.error("Please log in to import contacts");
-      return;
-    }
-
+  // Parse pasted text - adds contacts to session state
+  const handleParsePaste = useCallback(() => {
     if (!pasteText.trim()) {
       toast.error("Please paste some text containing email addresses");
       return;
@@ -572,38 +525,36 @@ export default function GlobalContactsPage() {
       return;
     }
 
-    const contactsData = extracted.map((data) => ({
-      email: data.email || "",
-      firstName: data.firstName,
-      lastName: data.lastName,
-    })).filter(c => c.email);
-
-    try {
-      setIsSubmitting(true);
-      const result = await bulkImportContacts(accessToken, {
-        contacts: contactsData,
-        dedupeStrategy: dedupeStrategy,
+    // Create contacts from extracted data
+    const newContacts: LocalContact[] = extracted
+      .filter((data) => data.email)
+      .map((data) => {
+        // Create contact locally (validation is handled internally)
+        return createLocalContact({
+          email: data.email || "",
+          firstName: data.firstName,
+          lastName: data.lastName,
+        });
       });
 
-      setPasteText("");
-      await fetchContacts();
-      await fetchStats();
+    // Add to session contacts with optional deduplication
+    setSessionContacts((prev) => {
+      const combined = [...prev, ...newContacts];
+      if (autoDedupe) {
+        return deduplicateContacts(
+          combined,
+          dedupeStrategy as "keepFirst" | "keepLast" | "merge"
+        );
+      }
+      return combined;
+    });
 
-      toast.success(`Extracted ${result.imported} contacts`);
-    } catch (error) {
-      console.error("Failed to import contacts:", error);
-      toast.error(error instanceof Error ? error.message : "Failed to import contacts");
-    } finally {
-      setIsSubmitting(false);
-    }
-  }, [accessToken, pasteText, dedupeStrategy, fetchContacts, fetchStats]);
+    setPasteText("");
+    toast.success(`Added ${newContacts.length} contacts to import queue`);
+  }, [pasteText, autoDedupe, dedupeStrategy]);
 
-  const handleAddManual = useCallback(async () => {
-    if (!accessToken) {
-      toast.error("Please log in to add contacts");
-      return;
-    }
-
+  // Add manual contact - adds to session state
+  const handleAddManual = useCallback(() => {
     if (!manualEmail.trim()) {
       setManualEmailError("Email is required");
       return;
@@ -614,114 +565,131 @@ export default function GlobalContactsPage() {
       return;
     }
 
-    try {
-      setIsSubmitting(true);
-      await createContact(accessToken, {
-        email: manualEmail,
-        firstName: manualFirstName || undefined,
-        lastName: manualLastName || undefined,
-        company: manualCompany || undefined,
-        role: manualRole || undefined,
-      });
+    // Create contact locally (validation is handled internally)
+    const contact = createLocalContact({
+      email: manualEmail,
+      firstName: manualFirstName || undefined,
+      lastName: manualLastName || undefined,
+      company: manualCompany || undefined,
+      role: manualRole || undefined,
+    });
 
-      // Clear form
-      setManualEmail("");
-      setManualFirstName("");
-      setManualLastName("");
-      setManualCompany("");
-      setManualRole("");
-      setManualEmailError("");
+    // Add to session contacts with optional deduplication
+    setSessionContacts((prev) => {
+      const combined = [...prev, contact];
+      if (autoDedupe) {
+        return deduplicateContacts(
+          combined,
+          dedupeStrategy as "keepFirst" | "keepLast" | "merge"
+        );
+      }
+      return combined;
+    });
 
-      // Refresh contacts list
-      await fetchContacts();
-      await fetchStats();
+    // Clear form
+    setManualEmail("");
+    setManualFirstName("");
+    setManualLastName("");
+    setManualCompany("");
+    setManualRole("");
+    setManualEmailError("");
 
-      toast.success("Contact added successfully");
-    } catch (error) {
-      console.error("Failed to add contact:", error);
-      toast.error(error instanceof Error ? error.message : "Failed to add contact");
-    } finally {
-      setIsSubmitting(false);
-    }
-  }, [accessToken, manualEmail, manualFirstName, manualLastName, manualCompany, manualRole, fetchContacts, fetchStats]);
+    toast.success("Contact added to import queue");
+  }, [
+    manualEmail,
+    manualFirstName,
+    manualLastName,
+    manualCompany,
+    manualRole,
+    autoDedupe,
+    dedupeStrategy,
+  ]);
 
+  // Update contact in session state
   const handleUpdateContact = useCallback(
-    async (id: string, field: keyof Contact, value: string) => {
-      if (!accessToken) return;
-
-      // Optimistically update local state
-      setContacts((prev) =>
+    (id: string, field: keyof LocalContact, value: string) => {
+      setSessionContacts((prev) =>
         prev.map((contact) => {
           if (contact.id !== id) return contact;
-          return { ...contact, [field]: value };
+          // Re-create contact to re-validate
+          return createLocalContact({ ...contact, [field]: value });
         })
       );
-
-      try {
-        await updateContact(accessToken, id, { [field]: value });
-      } catch (error) {
-        console.error("Failed to update contact:", error);
-        toast.error(error instanceof Error ? error.message : "Failed to update contact");
-        // Refresh to revert on error
-        fetchContacts();
-      }
     },
-    [accessToken, fetchContacts]
+    []
   );
 
-  const handleDeleteSelected = useCallback(async () => {
-    if (!accessToken) {
-      toast.error("Please log in to delete contacts");
-      return;
-    }
-
+  // Delete selected contacts from session
+  const handleDeleteSelected = useCallback(() => {
     const idsToDelete = Array.from(selectedIds);
     if (idsToDelete.length === 0) return;
 
+    setSessionContacts((prev) => prev.filter((c) => !selectedIds.has(c.id)));
+    setSelectedIds(new Set());
+    toast.success(`Removed ${idsToDelete.length} contacts`);
+  }, [selectedIds]);
+
+  // Export session contacts
+  const handleExport = useCallback(() => {
+    const csv = contactsToCSV(sessionContacts);
+    downloadFile(csv, "contacts.csv", "text/csv");
+    toast.success("Contacts exported successfully");
+  }, [sessionContacts]);
+
+  // Export selected contacts
+  const handleExportSelected = useCallback(() => {
+    const selected = sessionContacts.filter((c) => selectedIds.has(c.id));
+    const csv = contactsToCSV(selected);
+    downloadFile(csv, "selected-contacts.csv", "text/csv");
+    toast.success(`Exported ${selected.length} contacts`);
+  }, [sessionContacts, selectedIds]);
+
+  // Save to global list - calls API then clears session
+  const handleSaveToGlobal = useCallback(async () => {
+    if (!accessToken) {
+      toast.error("Please log in to save contacts");
+      return;
+    }
+
+    if (sessionContacts.length === 0) {
+      toast.error("No contacts to save");
+      return;
+    }
+
+    const contactsData = sessionContacts.map((c) => ({
+      email: c.email,
+      firstName: c.firstName || undefined,
+      lastName: c.lastName || undefined,
+      company: c.company || undefined,
+      role: c.role || undefined,
+      tags: c.tags,
+    }));
+
     try {
       setIsSubmitting(true);
-      await deleteContacts(accessToken, idsToDelete);
+      const result = await bulkImportContacts(accessToken, {
+        contacts: contactsData,
+        dedupeStrategy: dedupeStrategy,
+      });
+
+      // Clear session contacts after successful save
+      setSessionContacts([]);
       setSelectedIds(new Set());
-      await fetchContacts();
-      await fetchStats();
-      toast.success(`Deleted ${idsToDelete.length} contacts`);
+
+      toast.success(
+        `Saved ${result.imported} contacts to global list (${result.duplicates} duplicates, ${result.skipped} skipped)`
+      );
     } catch (error) {
-      console.error("Failed to delete contacts:", error);
-      toast.error(error instanceof Error ? error.message : "Failed to delete contacts");
+      console.error("Failed to save contacts:", error);
+      toast.error(
+        error instanceof Error ? error.message : "Failed to save contacts"
+      );
     } finally {
       setIsSubmitting(false);
     }
-  }, [accessToken, selectedIds, fetchContacts, fetchStats]);
+  }, [accessToken, sessionContacts, dedupeStrategy]);
 
-  const handleExport = useCallback(() => {
-    // Convert API contacts to local format for CSV export
-    const localContacts = contacts.map((c) => ({
-      ...c,
-      firstName: c.firstName ?? "",
-      lastName: c.lastName ?? "",
-      company: c.company ?? "",
-      role: c.role ?? "",
-    }));
-    const csv = contactsToCSV(localContacts as unknown as LocalContact[]);
-    downloadFile(csv, "contacts.csv", "text/csv");
-    toast.success("Contacts exported successfully");
-  }, [contacts]);
-
-  const handleExportSelected = useCallback(() => {
-    const selected = contacts.filter((c) => selectedIds.has(c.id));
-    // Convert API contacts to local format for CSV export
-    const localContacts = selected.map((c) => ({
-      ...c,
-      firstName: c.firstName ?? "",
-      lastName: c.lastName ?? "",
-      company: c.company ?? "",
-      role: c.role ?? "",
-    }));
-    const csv = contactsToCSV(localContacts as unknown as LocalContact[]);
-    downloadFile(csv, "selected-contacts.csv", "text/csv");
-    toast.success(`Exported ${selected.length} contacts`);
-  }, [contacts, selectedIds]);
-
+  // Save as named list - calls API then clears session
   const handleSaveList = useCallback(async () => {
     if (!accessToken) {
       toast.error("Please log in to save lists");
@@ -733,29 +701,59 @@ export default function GlobalContactsPage() {
       return;
     }
 
+    if (sessionContacts.length === 0) {
+      toast.error("No contacts to save");
+      return;
+    }
+
+    // First save contacts to global list
+    const contactsData = sessionContacts.map((c) => ({
+      email: c.email,
+      firstName: c.firstName || undefined,
+      lastName: c.lastName || undefined,
+      company: c.company || undefined,
+      role: c.role || undefined,
+      tags: c.tags,
+    }));
+
     try {
       setIsSubmitting(true);
-      const contactIds = contacts.map((c) => c.id);
+
+      // Import contacts first
+      const importResult = await bulkImportContacts(accessToken, {
+        contacts: contactsData,
+        dedupeStrategy: dedupeStrategy,
+      });
+
+      // Then create the named list (the API should link them)
       await createContactList(accessToken, {
         name: listName,
         description: listDescription || undefined,
-        contactIds,
+        contactIds: [], // API will handle linking
       });
 
-      toast.success(`Saved "${listName}" with ${contacts.length} contacts`);
+      toast.success(
+        `Saved "${listName}" with ${importResult.imported} contacts`
+      );
+
+      // Clear session and modal
+      setSessionContacts([]);
+      setSelectedIds(new Set());
       setShowSaveModal(false);
       setListName("");
       setListDescription("");
     } catch (error) {
       console.error("Failed to save list:", error);
-      toast.error(error instanceof Error ? error.message : "Failed to save list");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to save list"
+      );
     } finally {
       setIsSubmitting(false);
     }
-  }, [accessToken, listName, listDescription, contacts]);
+  }, [accessToken, listName, listDescription, sessionContacts, dedupeStrategy]);
 
   const handleClearAll = useCallback(() => {
-    setContacts([]);
+    setSessionContacts([]);
     setSelectedIds(new Set());
     setShowClearDialog(false);
     toast.success("All contacts cleared");
@@ -789,7 +787,10 @@ export default function GlobalContactsPage() {
           <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-6">
             <span className="font-medium text-foreground">Global Contacts</span>
             <ChevronRight className="size-4" />
-            <Link href="/global-contacts/lists" className="hover:text-foreground transition-colors">
+            <Link
+              href="/global-contacts/lists"
+              className="hover:text-foreground transition-colors"
+            >
               Manage Lists
             </Link>
           </nav>
@@ -797,9 +798,12 @@ export default function GlobalContactsPage() {
           {/* Header */}
           <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-8">
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Global Contacts</h1>
+              <h1 className="text-2xl font-semibold tracking-tight">
+                Global Contacts
+              </h1>
               <p className="text-muted-foreground mt-1">
-                Centralized repository of recipients. Import, clean, and map contacts here before using them in campaigns.
+                Centralized repository of recipients. Import, clean, and map
+                contacts here before using them in campaigns.
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -811,14 +815,11 @@ export default function GlobalContactsPage() {
                 <History className="size-4" />
                 Import History
               </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setShowSaveModal(true)}
-                disabled={contacts.length === 0}
-              >
-                <Save className="size-4" />
-                Save Contact List
+              <Button variant="secondary" size="sm" asChild>
+                <Link href="/global-contacts/all">
+                  <Users className="size-4" />
+                  View All Contacts
+                </Link>
               </Button>
               <Button size="sm" onClick={() => setActiveTab("manual")}>
                 <UserPlus className="size-4" />
@@ -837,19 +838,11 @@ export default function GlobalContactsPage() {
                   <div className="flex items-center justify-between">
                     <div>
                       <CardTitle>Import Contacts</CardTitle>
-                      <CardDescription>Add contacts via file upload, paste, or manual entry</CardDescription>
+                      <CardDescription>
+                        Add contacts via file upload, paste, or manual entry
+                      </CardDescription>
                     </div>
                     <div className="flex items-center gap-4">
-                      {/*<div className="flex items-center gap-2">
-                        <Switch
-                          id="auto-dedupe"
-                          checked={autoDedupe}
-                          onCheckedChange={setAutoDedupe}
-                        />
-                        <Label htmlFor="auto-dedupe" className="text-sm">
-                          Auto Deduplicate
-                        </Label>
-                      </div>*/}
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon-sm">
@@ -857,18 +850,44 @@ export default function GlobalContactsPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <div className="px-2 py-1.5 text-sm font-medium">Duplicate Strategy</div>
+                          <div className="px-2 py-1.5 text-sm font-medium">
+                            Duplicate Strategy
+                          </div>
                           <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => setDedupeStrategy("keepFirst")}>
-                            <Check className={`size-4 mr-2 ${dedupeStrategy === "keepFirst" ? "opacity-100" : "opacity-0"}`} />
+                          <DropdownMenuItem
+                            onClick={() => setDedupeStrategy("keepFirst")}
+                          >
+                            <Check
+                              className={`size-4 mr-2 ${
+                                dedupeStrategy === "keepFirst"
+                                  ? "opacity-100"
+                                  : "opacity-0"
+                              }`}
+                            />
                             Keep first occurrence
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setDedupeStrategy("keepLast")}>
-                            <Check className={`size-4 mr-2 ${dedupeStrategy === "keepLast" ? "opacity-100" : "opacity-0"}`} />
+                          <DropdownMenuItem
+                            onClick={() => setDedupeStrategy("keepLast")}
+                          >
+                            <Check
+                              className={`size-4 mr-2 ${
+                                dedupeStrategy === "keepLast"
+                                  ? "opacity-100"
+                                  : "opacity-0"
+                              }`}
+                            />
                             Keep last occurrence
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setDedupeStrategy("merge")}>
-                            <Check className={`size-4 mr-2 ${dedupeStrategy === "merge" ? "opacity-100" : "opacity-0"}`} />
+                          <DropdownMenuItem
+                            onClick={() => setDedupeStrategy("merge")}
+                          >
+                            <Check
+                              className={`size-4 mr-2 ${
+                                dedupeStrategy === "merge"
+                                  ? "opacity-100"
+                                  : "opacity-0"
+                              }`}
+                            />
                             Merge fields
                           </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -896,7 +915,9 @@ export default function GlobalContactsPage() {
                     <TabsContent value="upload" className="mt-0">
                       <div
                         className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors ${
-                          dragOver ? "border-primary bg-primary/5" : "border-muted"
+                          dragOver
+                            ? "border-primary bg-primary/5"
+                            : "border-muted"
                         }`}
                         onDragOver={(e) => {
                           e.preventDefault();
@@ -906,7 +927,9 @@ export default function GlobalContactsPage() {
                         onDrop={handleDrop}
                       >
                         <Upload className="size-10 mx-auto mb-4 text-muted-foreground" />
-                        <p className="font-medium mb-1">Drag and drop your file here</p>
+                        <p className="font-medium mb-1">
+                          Drag and drop your file here
+                        </p>
                         <p className="text-sm text-muted-foreground mb-4">
                           Accepts .csv, .xlsx, .xls
                         </p>
@@ -918,11 +941,17 @@ export default function GlobalContactsPage() {
                           className="hidden"
                           aria-label="Upload file"
                         />
-                        <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
+                        <Button
+                          variant="outline"
+                          onClick={() => fileInputRef.current?.click()}
+                        >
                           Browse Files
                         </Button>
                         <p className="text-xs text-muted-foreground mt-4">
-                          <a href="#" className="underline">Download sample CSV</a> to see the expected format
+                          <a href="#" className="underline">
+                            Download sample CSV
+                          </a>{" "}
+                          to see the expected format
                         </p>
                       </div>
                     </TabsContent>
@@ -938,11 +967,15 @@ export default function GlobalContactsPage() {
                         />
                         <div className="flex justify-between items-center">
                           <p className="text-sm text-muted-foreground">
-                            We&apos;ll automatically extract email addresses and names
+                            We&apos;ll automatically extract email addresses and
+                            names
                           </p>
-                          <Button onClick={handleParsePaste} disabled={!pasteText.trim()}>
+                          <Button
+                            onClick={handleParsePaste}
+                            disabled={!pasteText.trim()}
+                          >
                             <ClipboardPaste className="size-4" />
-                            Parse & Import
+                            Parse & Add
                           </Button>
                         </div>
                       </div>
@@ -968,12 +1001,19 @@ export default function GlobalContactsPage() {
                               }
                             }}
                             placeholder="contact@example.com"
-                            className={manualEmailError ? "border-destructive" : ""}
+                            className={
+                              manualEmailError ? "border-destructive" : ""
+                            }
                             aria-invalid={!!manualEmailError}
-                            aria-describedby={manualEmailError ? "email-error" : undefined}
+                            aria-describedby={
+                              manualEmailError ? "email-error" : undefined
+                            }
                           />
                           {manualEmailError && (
-                            <p id="email-error" className="text-sm text-destructive mt-1">
+                            <p
+                              id="email-error"
+                              className="text-sm text-destructive mt-1"
+                            >
                               {manualEmailError}
                             </p>
                           )}
@@ -1030,7 +1070,13 @@ export default function GlobalContactsPage() {
               <Card className="rounded-2xl">
                 <CardHeader className="pb-4">
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                    <CardTitle>Contact Preview</CardTitle>
+                    <div>
+                      <CardTitle>Contact Preview</CardTitle>
+                      <CardDescription className="mt-1">
+                        Contacts imported in this session. Save to add them to
+                        your global contact database.
+                      </CardDescription>
+                    </div>
                     <div className="flex items-center gap-2">
                       <div className="relative flex-1 sm:flex-none">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
@@ -1049,22 +1095,56 @@ export default function GlobalContactsPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-48">
-                          <div className="px-2 py-1.5 text-sm font-medium">Filter by Status</div>
+                          <div className="px-2 py-1.5 text-sm font-medium">
+                            Filter by Status
+                          </div>
                           <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => setStatusFilter("all")}>
-                            <Check className={`size-4 mr-2 ${statusFilter === "all" ? "opacity-100" : "opacity-0"}`} />
+                          <DropdownMenuItem
+                            onClick={() => setStatusFilter("all")}
+                          >
+                            <Check
+                              className={`size-4 mr-2 ${
+                                statusFilter === "all"
+                                  ? "opacity-100"
+                                  : "opacity-0"
+                              }`}
+                            />
                             All
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setStatusFilter("valid")}>
-                            <Check className={`size-4 mr-2 ${statusFilter === "valid" ? "opacity-100" : "opacity-0"}`} />
+                          <DropdownMenuItem
+                            onClick={() => setStatusFilter("valid")}
+                          >
+                            <Check
+                              className={`size-4 mr-2 ${
+                                statusFilter === "valid"
+                                  ? "opacity-100"
+                                  : "opacity-0"
+                              }`}
+                            />
                             Valid only
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setStatusFilter("invalid")}>
-                            <Check className={`size-4 mr-2 ${statusFilter === "invalid" ? "opacity-100" : "opacity-0"}`} />
+                          <DropdownMenuItem
+                            onClick={() => setStatusFilter("invalid")}
+                          >
+                            <Check
+                              className={`size-4 mr-2 ${
+                                statusFilter === "invalid"
+                                  ? "opacity-100"
+                                  : "opacity-0"
+                              }`}
+                            />
                             Invalid only
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setStatusFilter("duplicate")}>
-                            <Check className={`size-4 mr-2 ${statusFilter === "duplicate" ? "opacity-100" : "opacity-0"}`} />
+                          <DropdownMenuItem
+                            onClick={() => setStatusFilter("duplicate")}
+                          >
+                            <Check
+                              className={`size-4 mr-2 ${
+                                statusFilter === "duplicate"
+                                  ? "opacity-100"
+                                  : "opacity-0"
+                              }`}
+                            />
                             Duplicates only
                           </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -1073,7 +1153,7 @@ export default function GlobalContactsPage() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  {contacts.length === 0 ? (
+                  {sessionContacts.length === 0 ? (
                     <EmptyState
                       onUpload={() => {
                         setActiveTab("upload");
@@ -1090,7 +1170,11 @@ export default function GlobalContactsPage() {
                             {selectedIds.size} selected
                           </span>
                           <div className="flex-1" />
-                          <Button variant="ghost" size="sm" onClick={handleExportSelected}>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleExportSelected}
+                          >
                             <Download className="size-4" />
                             Export
                           </Button>
@@ -1111,7 +1195,11 @@ export default function GlobalContactsPage() {
                           <TableRow>
                             <TableHead className="w-10">
                               <Checkbox
-                                checked={selectedIds.size === filteredContacts.length && filteredContacts.length > 0}
+                                checked={
+                                  selectedIds.size ===
+                                    filteredContacts.length &&
+                                  filteredContacts.length > 0
+                                }
                                 onCheckedChange={toggleSelectAll}
                                 aria-label="Select all"
                               />
@@ -1126,11 +1214,20 @@ export default function GlobalContactsPage() {
                         </TableHeader>
                         <TableBody>
                           {filteredContacts.map((contact) => (
-                            <TableRow key={contact.id} data-state={selectedIds.has(contact.id) ? "selected" : undefined}>
+                            <TableRow
+                              key={contact.id}
+                              data-state={
+                                selectedIds.has(contact.id)
+                                  ? "selected"
+                                  : undefined
+                              }
+                            >
                               <TableCell>
                                 <Checkbox
                                   checked={selectedIds.has(contact.id)}
-                                  onCheckedChange={() => toggleSelect(contact.id)}
+                                  onCheckedChange={() =>
+                                    toggleSelect(contact.id)
+                                  }
                                   aria-label={`Select ${contact.email}`}
                                 />
                               </TableCell>
@@ -1138,29 +1235,52 @@ export default function GlobalContactsPage() {
                                 <EditableCell
                                   value={contact.email}
                                   type="email"
-                                  onSave={(v) => handleUpdateContact(contact.id, "email", v)}
+                                  onSave={(v) =>
+                                    handleUpdateContact(contact.id, "email", v)
+                                  }
                                 />
                               </TableCell>
                               <TableCell>
                                 <EditableCell
                                   value={contact.firstName ?? ""}
-                                  onSave={(v) => handleUpdateContact(contact.id, "firstName", v)}
+                                  onSave={(v) =>
+                                    handleUpdateContact(
+                                      contact.id,
+                                      "firstName",
+                                      v
+                                    )
+                                  }
                                 />
                               </TableCell>
                               <TableCell>
                                 <EditableCell
                                   value={contact.lastName ?? ""}
-                                  onSave={(v) => handleUpdateContact(contact.id, "lastName", v)}
+                                  onSave={(v) =>
+                                    handleUpdateContact(
+                                      contact.id,
+                                      "lastName",
+                                      v
+                                    )
+                                  }
                                 />
                               </TableCell>
                               <TableCell>
                                 <EditableCell
                                   value={contact.company ?? ""}
-                                  onSave={(v) => handleUpdateContact(contact.id, "company", v)}
+                                  onSave={(v) =>
+                                    handleUpdateContact(
+                                      contact.id,
+                                      "company",
+                                      v
+                                    )
+                                  }
                                 />
                               </TableCell>
                               <TableCell>
-                                <StatusBadge status={contact.status} errors={contact.validationErrors} />
+                                <StatusBadge
+                                  status={contact.status}
+                                  errors={contact.validationErrors}
+                                />
                               </TableCell>
                               <TableCell>
                                 <DropdownMenu>
@@ -1170,20 +1290,28 @@ export default function GlobalContactsPage() {
                                     </Button>
                                   </DropdownMenuTrigger>
                                   <DropdownMenuContent align="end">
-                                    <DropdownMenuItem onClick={() => toggleSelect(contact.id)}>
-                                      <Edit3 className="size-4 mr-2" />
-                                      {selectedIds.has(contact.id) ? "Deselect" : "Select"}
+                                    <DropdownMenuItem
+                                      onClick={() => toggleSelect(contact.id)}
+                                    >
+                                      <Check className="size-4 mr-2" />
+                                      {selectedIds.has(contact.id)
+                                        ? "Deselect"
+                                        : "Select"}
                                     </DropdownMenuItem>
                                     <DropdownMenuSeparator />
                                     <DropdownMenuItem
                                       className="text-destructive focus:text-destructive"
                                       onClick={() => {
-                                        setContacts((prev) => prev.filter((c) => c.id !== contact.id));
+                                        setSessionContacts((prev) =>
+                                          prev.filter(
+                                            (c) => c.id !== contact.id
+                                          )
+                                        );
                                         toast.success("Contact removed");
                                       }}
                                     >
                                       <Trash2 className="size-4 mr-2" />
-                                      Delete
+                                      Remove
                                     </DropdownMenuItem>
                                   </DropdownMenuContent>
                                 </DropdownMenu>
@@ -1193,11 +1321,12 @@ export default function GlobalContactsPage() {
                         </TableBody>
                       </Table>
 
-                      {filteredContacts.length === 0 && contacts.length > 0 && (
-                        <div className="text-center py-8 text-muted-foreground">
-                          No contacts match your search criteria
-                        </div>
-                      )}
+                      {filteredContacts.length === 0 &&
+                        sessionContacts.length > 0 && (
+                          <div className="text-center py-8 text-muted-foreground">
+                            No contacts match your search criteria
+                          </div>
+                        )}
                     </>
                   )}
                 </CardContent>
@@ -1208,7 +1337,10 @@ export default function GlobalContactsPage() {
             <div className="space-y-6">
               <Card className="rounded-2xl">
                 <CardHeader>
-                  <CardTitle>Summary</CardTitle>
+                  <CardTitle>Session Summary</CardTitle>
+                  <CardDescription>
+                    Contacts imported in this session
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
@@ -1225,8 +1357,12 @@ export default function GlobalContactsPage() {
                       <p className="text-sm text-muted-foreground">Invalid</p>
                     </div>
                     <div className="p-4 bg-muted rounded-xl">
-                      <p className="text-2xl font-semibold">{stats.duplicate}</p>
-                      <p className="text-sm text-muted-foreground">Duplicates</p>
+                      <p className="text-2xl font-semibold">
+                        {stats.duplicate}
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        Duplicates
+                      </p>
                     </div>
                   </div>
 
@@ -1235,8 +1371,13 @@ export default function GlobalContactsPage() {
                       <p className="text-sm font-medium mb-2">Top Domains</p>
                       <div className="space-y-2">
                         {stats.topDomains.map((d) => (
-                          <div key={d.domain} className="flex justify-between text-sm">
-                            <span className="text-muted-foreground truncate">{d.domain}</span>
+                          <div
+                            key={d.domain}
+                            className="flex justify-between text-sm"
+                          >
+                            <span className="text-muted-foreground truncate">
+                              {d.domain}
+                            </span>
                             <span className="font-medium">{d.count}</span>
                           </div>
                         ))}
@@ -1252,17 +1393,29 @@ export default function GlobalContactsPage() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Button
-                    variant={statusFilter === "invalid" ? "secondary" : "outline"}
+                    variant={
+                      statusFilter === "invalid" ? "secondary" : "outline"
+                    }
                     className="w-full justify-start"
-                    onClick={() => setStatusFilter(statusFilter === "invalid" ? "all" : "invalid")}
+                    onClick={() =>
+                      setStatusFilter(
+                        statusFilter === "invalid" ? "all" : "invalid"
+                      )
+                    }
                   >
                     <AlertCircle className="size-4" />
                     Show Invalid Only
                   </Button>
                   <Button
-                    variant={statusFilter === "duplicate" ? "secondary" : "outline"}
+                    variant={
+                      statusFilter === "duplicate" ? "secondary" : "outline"
+                    }
                     className="w-full justify-start"
-                    onClick={() => setStatusFilter(statusFilter === "duplicate" ? "all" : "duplicate")}
+                    onClick={() =>
+                      setStatusFilter(
+                        statusFilter === "duplicate" ? "all" : "duplicate"
+                      )
+                    }
                   >
                     <Copy className="size-4" />
                     Show Duplicates
@@ -1291,35 +1444,45 @@ export default function GlobalContactsPage() {
                   <Button
                     className="w-full"
                     onClick={() => setShowSaveModal(true)}
-                    disabled={contacts.length === 0}
+                    disabled={sessionContacts.length === 0}
                   >
                     <Save className="size-4" />
-                    Save to Global List
+                    Create Named List
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={handleSaveToGlobal}
+                    disabled={sessionContacts.length === 0 || isSubmitting}
+                  >
+                    <Save className="size-4" />
+                    Save Contacts
                   </Button>
                   <Button
                     variant="outline"
                     className="w-full"
                     onClick={handleExport}
-                    disabled={contacts.length === 0}
+                    disabled={sessionContacts.length === 0}
                   >
                     <Download className="size-4" />
-                    Export CSV
+                    Export to CSV
                   </Button>
                   <Button
                     variant="outline"
                     className="w-full text-destructive hover:text-destructive"
                     onClick={() => setShowClearDialog(true)}
-                    disabled={contacts.length === 0}
+                    disabled={sessionContacts.length === 0}
                   >
                     <Trash2 className="size-4" />
-                    Clear All
+                    Discard All
                   </Button>
                 </CardContent>
               </Card>
 
               <div className="p-4 bg-muted rounded-xl">
                 <p className="text-sm text-muted-foreground">
-                  <strong>Reminder:</strong> Always include an unsubscribe footer when sending marketing emails.
+                  <strong>Reminder:</strong> Always include an unsubscribe
+                  footer when sending marketing emails.
                 </p>
               </div>
             </div>
@@ -1332,7 +1495,8 @@ export default function GlobalContactsPage() {
             <DialogHeader>
               <DialogTitle>Map Columns</DialogTitle>
               <DialogDescription>
-                Assign each column from your file to a contact field. Columns mapped to &quot;Ignore&quot; will be skipped.
+                Assign each column from your file to a contact field. Columns
+                mapped to &quot;Ignore&quot; will be skipped.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3 max-h-[400px] overflow-y-auto py-4">
@@ -1349,12 +1513,13 @@ export default function GlobalContactsPage() {
               ))}
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setShowMappingModal(false)}>
+              <Button
+                variant="outline"
+                onClick={() => setShowMappingModal(false)}
+              >
                 Cancel
               </Button>
-              <Button onClick={confirmMapping}>
-                Confirm & Import
-              </Button>
+              <Button onClick={confirmMapping}>Confirm & Add</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -1363,9 +1528,10 @@ export default function GlobalContactsPage() {
         <Dialog open={showSaveModal} onOpenChange={setShowSaveModal}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Save Contact List</DialogTitle>
+              <DialogTitle>Save as Named List</DialogTitle>
               <DialogDescription>
-                Save {contacts.length} contacts to a named global list for use across campaigns.
+                Save {sessionContacts.length} contacts to a named list for use
+                across campaigns.
               </DialogDescription>
             </DialogHeader>
             <div className="py-4">
@@ -1377,11 +1543,23 @@ export default function GlobalContactsPage() {
                 placeholder="e.g., Q4 Product Launch Leads"
                 className="mt-2"
               />
-              {contacts.length > 0 && (
+              <div className="mt-4">
+                <Label htmlFor="listDescription">Description (optional)</Label>
+                <Input
+                  id="listDescription"
+                  value={listDescription}
+                  onChange={(e) => setListDescription(e.target.value)}
+                  placeholder="e.g., Leads from recent webinar"
+                  className="mt-2"
+                />
+              </div>
+              {sessionContacts.length > 0 && (
                 <div className="mt-4 p-4 bg-muted rounded-lg">
-                  <p className="text-sm font-medium mb-2">Preview (first 5 contacts):</p>
+                  <p className="text-sm font-medium mb-2">
+                    Preview (first 5 contacts):
+                  </p>
                   <div className="space-y-1 text-sm text-muted-foreground">
-                    {contacts.slice(0, 5).map((c) => (
+                    {sessionContacts.slice(0, 5).map((c) => (
                       <p key={c.id}>
                         Hi {c.firstName || "{{firstName}}"} — {c.email}
                       </p>
@@ -1394,7 +1572,7 @@ export default function GlobalContactsPage() {
               <Button variant="outline" onClick={() => setShowSaveModal(false)}>
                 Cancel
               </Button>
-              <Button onClick={handleSaveList}>
+              <Button onClick={handleSaveList} disabled={isSubmitting}>
                 Confirm Save
               </Button>
             </DialogFooter>
@@ -1407,7 +1585,8 @@ export default function GlobalContactsPage() {
             <AlertDialogHeader>
               <AlertDialogTitle>Clear all contacts?</AlertDialogTitle>
               <AlertDialogDescription>
-                This will remove all {contacts.length} contacts from this import session. This action cannot be undone.
+                This will remove all {sessionContacts.length} contacts from this
+                import session. This action cannot be undone.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
