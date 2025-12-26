@@ -135,7 +135,7 @@ export default function SignupPage() {
               <div className="flex items-center gap-2">
                 <span className="text-xl font-bold text-white">Email Config</span>
                 <span className="px-2 py-0.5 text-[10px] font-semibold bg-white/20 text-white rounded-full">
-                  BETA
+                  PRIVATE BETA
                 </span>
               </div>
             </Link>

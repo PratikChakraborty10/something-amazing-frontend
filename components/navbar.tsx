@@ -83,7 +83,7 @@ function Navbar() {
             <div className="flex items-center gap-2">
               <span className="text-xl font-bold">Email Config</span>
               <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-gradient-to-r from-primary/20 to-primary/10 text-primary border border-primary/30 rounded">
-                BETA
+                PRIVATE BETA
               </span>
             </div>
           </Link>
