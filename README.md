@@ -1,5 +1,7 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Please find the backend REPO - https://github.com/PratikChakraborty10/something-amazing-backend
+
 ## Getting Started
 
 First, run the development server:
